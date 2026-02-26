@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# uv
+.python-version
+
+# Generated test fixtures (Parquet data files)
+tests/fixtures/
+
+# Environment / secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# vim swap files
+*.swp
+*.swo
+
+# Taurus / bzt temp files
+.bzt/
+bzt.log

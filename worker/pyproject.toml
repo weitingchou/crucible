@@ -1,0 +1,25 @@
+[project]
+name = "crucible-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "celery[rabbitmq]>=5.4.0",
+    "pydantic-settings>=2.6.0",
+    "pyyaml>=6.0.2",
+    "boto3>=1.35.0",
+    "bzt>=1.16.0",
+    "cassandra-driver>=3.29.0",
+    "psycopg2-binary>=2.9.9",
+    "pymysql>=1.1.0",
+    "crucible-lib",
+]
+
+[tool.uv.sources]
+crucible-lib = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worker"]
