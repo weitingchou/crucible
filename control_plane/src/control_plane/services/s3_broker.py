@@ -49,3 +49,9 @@ async def complete_multipart(
         MultipartUpload={"Parts": parts},
     )
     return {"key": key, "status": "completed"}
+
+
+async def save_plan(name: str, content: bytes) -> dict:
+    key = f"plans/{name}.yaml"
+    _s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=content)
+    return {"key": key}

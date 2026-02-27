@@ -9,11 +9,23 @@ dependencies = [
     "boto3>=1.35.0",
     "celery[rabbitmq]>=5.4.0",
     "pyyaml>=6.0.2",
+    "python-multipart>=0.0.9",
     "crucible-lib",
 ]
 
 [tool.uv.sources]
 crucible-lib = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]
