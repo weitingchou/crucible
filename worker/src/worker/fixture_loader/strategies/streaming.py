@@ -11,14 +11,16 @@ class StreamingStrategy:
     """NoSQL path: streams CSV rows from S3 directly into Cassandra.
 
     Data flows: S3 → worker RAM (single line buffer) → Cassandra.
-    The local disk is never written to. config keys required:
-    db_host, keyspace, table, columns (list[str]).
+    The local disk is never written to. Connection details come from
+    component_spec.cluster_info; host follows the "hostname:port" format.
+    config keys required: host, target_db, table, columns (list[str]).
     """
 
     def load(self, s3_uris: list[str], config: dict) -> None:
         s3 = boto3.client("s3", region_name=settings.aws_region)
-        cluster = Cluster([config["db_host"]])
-        session = cluster.connect(config["keyspace"])
+        host, _port = _parse_host(config["host"])
+        cluster = Cluster([host])
+        session = cluster.connect(config["target_db"])
 
         columns: list[str] = config["columns"]
         placeholders = ", ".join(["?"] * len(columns))
@@ -39,6 +41,14 @@ class StreamingStrategy:
                 )
         finally:
             cluster.shutdown()
+
+
+def _parse_host(host_str: str) -> tuple[str, int]:
+    """Split 'hostname:port' into (hostname, port). Defaults to 9042 if omitted."""
+    if ":" in host_str:
+        host, _, port_str = host_str.rpartition(":")
+        return host, int(port_str)
+    return host_str, 9042
 
 
 def _parse_s3_uri(uri: str) -> tuple[str, str]:

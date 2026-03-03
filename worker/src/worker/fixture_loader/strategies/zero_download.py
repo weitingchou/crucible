@@ -5,18 +5,21 @@ class ZeroDownloadStrategy:
     """MPP path: issues SQL to the SUT so the cluster pulls Parquet from S3 directly.
 
     No data passes through the Celery worker. Targets: Doris, Trino.
-    The database connection details are expected in *config* under the keys
-    db_host, db_port, db_user, db_password, db_name, table, s3_access_key,
-    s3_secret_key.
+
+    Connection details come from component_spec.cluster_info in the test plan.
+    The host field follows the format "hostname:port" (e.g. "localhost:9030").
+    DB credentials (db_user, db_password) and S3 credentials (s3_access_key,
+    s3_secret_key) are injected at runtime via cluster_info extras.
     """
 
     def load(self, s3_uris: list[str], config: dict) -> None:
+        host, port = _parse_host(config["host"])
         conn = pymysql.connect(
-            host=config["db_host"],
-            port=int(config.get("db_port", 9030)),
+            host=host,
+            port=port,
             user=config["db_user"],
             password=config["db_password"],
-            database=config["db_name"],
+            database=config["target_db"],
         )
         try:
             with conn.cursor() as cur:
@@ -34,3 +37,11 @@ class ZeroDownloadStrategy:
             conn.commit()
         finally:
             conn.close()
+
+
+def _parse_host(host_str: str) -> tuple[str, int]:
+    """Split 'hostname:port' into (hostname, port). Defaults to 9030 if omitted."""
+    if ":" in host_str:
+        host, _, port_str = host_str.rpartition(":")
+        return host, int(port_str)
+    return host_str, 9030
