@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import yaml
 from fastapi import APIRouter, HTTPException, UploadFile
 
@@ -22,4 +24,5 @@ async def upload_test_plan(file: UploadFile) -> dict:
         plan = TestPlan.model_validate(data)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return await s3_broker.save_plan(plan.name, content)
+    name = Path(file.filename).stem
+    return await s3_broker.save_plan(name, content)

@@ -52,6 +52,6 @@ async def complete_multipart(
 
 
 async def save_plan(name: str, content: bytes) -> dict:
-    key = f"plans/{name}.yaml"
+    key = f"plans/{name}"
     _s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=content)
     return {"key": key}

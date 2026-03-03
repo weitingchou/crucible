@@ -26,7 +26,7 @@ SAVE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.save_plan"
 @pytest.fixture
 def mock_save_plan():
     with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m:
-        m.return_value = {"key": "plans/smoke-test.yaml"}
+        m.return_value = {"key": "plans/smoke-test"}
         yield m
 
 
@@ -41,7 +41,7 @@ def test_create_plan_returns_201(mock_save_plan):
 
 def test_create_plan_returns_s3_key(mock_save_plan):
     response = client.post("/test-plans", json=VALID_PLAN)
-    assert response.json() == {"key": "plans/smoke-test.yaml"}
+    assert response.json() == {"key": "plans/smoke-test"}
 
 
 def test_create_plan_calls_save_plan_with_correct_name(mock_save_plan):
@@ -91,9 +91,9 @@ def test_upload_plan_returns_201(mock_save_plan):
 
 
 def test_upload_plan_returns_s3_key(mock_save_plan):
-    mock_save_plan.return_value = {"key": "plans/smoke-test.yaml"}
+    mock_save_plan.return_value = {"key": "plans/smoke-test"}
     response = client.post("/test-plans/upload", files=_yaml_file(VALID_PLAN))
-    assert response.json() == {"key": "plans/smoke-test.yaml"}
+    assert response.json() == {"key": "plans/smoke-test"}
 
 
 def test_upload_plan_preserves_original_bytes(mock_save_plan):
@@ -104,10 +104,10 @@ def test_upload_plan_preserves_original_bytes(mock_save_plan):
     assert content_arg == original
 
 
-def test_upload_plan_extracts_name_from_yaml(mock_save_plan):
-    client.post("/test-plans/upload", files=_yaml_file(VALID_PLAN))
+def test_upload_plan_uses_filename_as_name(mock_save_plan):
+    client.post("/test-plans/upload", files=_yaml_file(VALID_PLAN, filename="my_plan.yaml"))
     name_arg = mock_save_plan.call_args[0][0]
-    assert name_arg == "smoke-test"
+    assert name_arg == "my_plan"
 
 
 def test_upload_plan_rejects_invalid_yaml():
