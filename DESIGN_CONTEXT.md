@@ -238,3 +238,61 @@ function parseAnnotatedSql(sqlText) {
     // ...
 }
 ```
+
+## 6. Test Plan YAML Specification (V1 Locked)
+
+### 6.1 Schema Philosophy
+The Test Plan schema strictly separates user-managed environments (`cluster_info`) from system-provisioned ones (`cluster_spec`). It also enforces explicit mapping between uploaded fixture artifacts and target database tables.
+
+### 6.2 Data Dictionary
+
+| Field Path | Type | Required | Description |
+| :--- | :--- | :---: | :--- |
+| **`test_metadata`** | Object | Yes | **Root block for test identification.** |
+| `test_metadata.run_label` | String | Yes | Human-readable ID for the test run (e.g., "Local_Doris_Test"). |
+| **`test_environment`** | Object | Yes | **Root block for database targeting.** |
+| `test_environment.env_type` | String | Yes | Enum: `long-lived` (shared) or `disposable` (ephemeral). |
+| `test_environment.component_spec` | Object | Yes | Defines the target engine topology. |
+| `component_spec.type` | String | Yes | Target engine (e.g., `doris`, `trino`). |
+| `component_spec.cluster_info` | Object | Conditional | **Bring-Your-Own:** Connection details (e.g., `host: localhost:9060`). Mutually exclusive with `cluster_spec`. |
+| `component_spec.cluster_spec` | Object | Conditional | **Provision-For-Me:** Specs for fresh cluster (e.g., `version`, `frontend_node.count`). Mutually exclusive with `cluster_info`. |
+| `test_environment.target_db` | String | Yes | Target database/keyspace name. |
+| `test_environment.fixtures` | Array | No | List of data artifacts to load. |
+| `fixtures[].fixture_id` | String | Yes | S3 object prefix for the dataset. |
+| `fixtures[].table` | String | Yes | Explicit destination table name. |
+| **`execution`** | Object | Yes | **Root block for load generation.** |
+| `execution.executor` | String | Yes | Engine: `k6` or `locust`. |
+| `execution.scaling_mode` | String | Yes | Enum: `intra_node` (vertical) or `inter_node` (horizontal). |
+| `execution.concurrency` | Integer | Yes | Number of VUs. |
+| `execution.ramp_up` | String | Yes | Duration (e.g., `30s`). |
+| `execution.hold_for` | String | Yes | Duration (e.g., `2m`). |
+| `execution.workload` | Array | Yes | List of query sets. |
+| `workload[].workload_id` | String | Yes | S3 ID for the annotated `.sql` file. |
+
+### 6.3 Valid YAML Example
+```yaml
+test_metadata:
+  run_label: "Local_Doris_Test"
+
+test_environment:
+  env_type: long-lived
+  target_db: benchmark_db
+  component_spec:
+    type: doris
+    cluster_info:
+      host: localhost:9060
+  fixtures:
+  - fixture_id: tpch-sf001-customer
+    table: customer
+  - fixture_id: tpch-sf001-lineitem
+    table: lineitem
+
+execution:
+  executor: k6
+  scaling_mode: intra_node
+  concurrency: 5
+  ramp_up: 30s
+  hold_for: 2m
+  workload:
+  - workload_id: tpch-test-queries
+```

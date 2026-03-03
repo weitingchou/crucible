@@ -148,24 +148,39 @@ curl http://localhost:8000/health
 
 **Step 1 — Upload a test plan (YAML)**
 
+Create a `doris-smoke-test.yaml` file:
+
+```yaml
+test_metadata:
+  run_label: "doris-smoke-test"
+
+test_environment:
+  env_type: long-lived
+  target_db: benchmark_db
+  component_spec:
+    type: doris
+    cluster_info:
+      host: localhost:9060
+  fixtures:
+    - fixture_id: my-fixture-001
+      table: sales
+
+execution:
+  executor: k6
+  scaling_mode: intra_node
+  concurrency: 50
+  ramp_up: 30s
+  hold_for: 5m
+  workload:
+    - workload_id: my-workload-001
+```
+
+Upload it:
+
 ```bash
-curl -X POST http://localhost:8000/test-plans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "doris-smoke-test",
-    "test_environment": {
-      "component": "doris",
-      "scaling_mode": "intra_node",
-      "worker_count": 2
-    },
-    "execution": [
-      {"concurrency": 50, "hold_for": "5m", "ramp_up": "30s"}
-    ],
-    "fixtures": [
-      {"fixture_id": "my-fixture-001", "component": "doris", "table": "sales"}
-    ],
-    "workload": "workloads/my_queries.sql"
-  }'
+curl -X POST http://localhost:8000/test-plans/upload \
+  -F "file=@doris-smoke-test.yaml"
+# {"key": "plans/doris-smoke-test"}
 ```
 
 **Step 2 — Upload a fixture dataset (for files > 5 GB, use multipart)**
@@ -183,8 +198,10 @@ curl -X PUT "<presigned_url>" --upload-file sales_part1.parquet
 
 **Step 3 — Trigger a test run**
 
+Pass the S3 key returned in Step 1:
+
 ```bash
-curl -X POST http://localhost:8000/test-runs/doris-smoke-test.yaml
+curl -X POST http://localhost:8000/test-runs/plans/doris-smoke-test
 # {"run_id": "...", "strategy": "distributed_vertical"}
 ```
 
