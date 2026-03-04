@@ -89,14 +89,15 @@ uv sync --package crucible-worker --no-dev
 
 ### Build Docker images
 
-Build both service images from the repo root (build context must be the root, not the service subdirectory):
+Build service images via Docker Compose (the build context is the repo root, as required by the Dockerfiles):
 
 ```bash
-# Build control plane image
-docker build -f control_plane/Dockerfile -t crucible-control-plane .
+# Build all images
+docker compose -f infrastructure/docker-compose.yml build
 
-# Build worker image (also compiles the custom xk6-sql binary via Go)
-docker build -f worker/Dockerfile -t crucible-worker .
+# Build a specific service image
+docker compose -f infrastructure/docker-compose.yml build control_plane
+docker compose -f infrastructure/docker-compose.yml build worker
 ```
 
 > **Note:** The worker Dockerfile performs a multi-stage build. Stage 1 compiles a custom `k6` binary with the `xk6-sql` and `xk6-sql-driver-mysql` extensions using Go 1.22. This step requires internet access on first build and may take a few minutes.
