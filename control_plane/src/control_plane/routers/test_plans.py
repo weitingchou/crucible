@@ -10,6 +10,21 @@ from ..services import s3_broker
 router = APIRouter(prefix="/test-plans", tags=["test-plans"])
 
 
+@router.get("")
+async def list_test_plans() -> dict:
+    """List all uploaded test plans."""
+    return await s3_broker.list_plans()
+
+
+@router.get("/{name}")
+async def get_test_plan(name: str) -> dict:
+    """Return the parsed content of a specific test plan."""
+    plan = await s3_broker.get_plan(name)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"Test plan '{name}' not found.")
+    return plan
+
+
 @router.post("", status_code=201)
 async def create_test_plan(plan: TestPlan) -> dict:
     content = yaml.dump(plan.model_dump()).encode()

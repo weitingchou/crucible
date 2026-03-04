@@ -21,6 +21,8 @@ VALID_PLAN = {
 }
 
 SAVE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.save_plan"
+LIST_PLANS_PATH = "control_plane.routers.test_plans.s3_broker.list_plans"
+GET_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.get_plan"
 
 
 @pytest.fixture
@@ -120,3 +122,68 @@ def test_upload_plan_rejects_yaml_failing_schema_validation():
     bad_plan = {**VALID_PLAN, "test_environment": {**VALID_PLAN["test_environment"], "component": "unknown_db"}}
     response = client.post("/test-plans/upload", files=_yaml_file(bad_plan))
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /test-plans  (list)
+# ---------------------------------------------------------------------------
+
+_PLAN_LIST = {
+    "plans": [
+        {"name": "smoke-test", "key": "plans/smoke-test", "last_modified": "2026-01-01T00:00:00", "size": 512},
+        {"name": "load-test", "key": "plans/load-test", "last_modified": "2026-01-02T00:00:00", "size": 768},
+    ]
+}
+
+
+def test_list_plans_returns_200():
+    with patch(LIST_PLANS_PATH, new_callable=AsyncMock) as m:
+        m.return_value = _PLAN_LIST
+        response = client.get("/test-plans")
+    assert response.status_code == 200
+
+
+def test_list_plans_returns_plans_list():
+    with patch(LIST_PLANS_PATH, new_callable=AsyncMock) as m:
+        m.return_value = _PLAN_LIST
+        response = client.get("/test-plans")
+    assert response.json() == _PLAN_LIST
+
+
+def test_list_plans_returns_empty_list_when_none_exist():
+    with patch(LIST_PLANS_PATH, new_callable=AsyncMock) as m:
+        m.return_value = {"plans": []}
+        response = client.get("/test-plans")
+    assert response.json() == {"plans": []}
+
+
+# ---------------------------------------------------------------------------
+# GET /test-plans/{name}  (detail)
+# ---------------------------------------------------------------------------
+
+def test_get_plan_returns_200():
+    with patch(GET_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = VALID_PLAN
+        response = client.get("/test-plans/smoke-test")
+    assert response.status_code == 200
+
+
+def test_get_plan_returns_plan_content():
+    with patch(GET_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = VALID_PLAN
+        response = client.get("/test-plans/smoke-test")
+    assert response.json() == VALID_PLAN
+
+
+def test_get_plan_passes_correct_name_to_broker():
+    with patch(GET_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = VALID_PLAN
+        client.get("/test-plans/smoke-test")
+    m.assert_called_once_with("smoke-test")
+
+
+def test_get_plan_returns_404_when_not_found():
+    with patch(GET_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = None
+        response = client.get("/test-plans/nonexistent")
+    assert response.status_code == 404

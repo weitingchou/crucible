@@ -1,4 +1,6 @@
+import yaml
 import boto3
+from botocore.exceptions import ClientError
 
 from ..config import settings
 
@@ -55,3 +57,29 @@ async def save_plan(name: str, content: bytes) -> dict:
     key = f"plans/{name}"
     _s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=content)
     return {"key": key}
+
+
+async def list_plans() -> dict:
+    paginator = _s3.get_paginator("list_objects_v2")
+    plans = [
+        {
+            "name": obj["Key"].removeprefix("plans/"),
+            "key": obj["Key"],
+            "last_modified": obj["LastModified"].isoformat(),
+            "size": obj["Size"],
+        }
+        for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix="plans/")
+        for obj in page.get("Contents", [])
+    ]
+    return {"plans": plans}
+
+
+async def get_plan(name: str) -> dict | None:
+    key = f"plans/{name}"
+    try:
+        response = _s3.get_object(Bucket=settings.s3_bucket, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            return None
+        raise
+    return yaml.safe_load(response["Body"].read())
