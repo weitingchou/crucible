@@ -2,10 +2,36 @@ from fastapi import APIRouter
 
 from fastapi import HTTPException
 
-from ..models import MultipartCompleteResponse, MultipartInitResponse, PartInfo, PresignedUrlResponse
-from ..services.s3_broker import complete_multipart, delete_fixture, get_presigned_part_url, init_multipart
+from ..models import (
+    FixtureFileListResponse,
+    FixtureIdListResponse,
+    MultipartCompleteResponse,
+    MultipartInitResponse,
+    PartInfo,
+    PresignedUrlResponse,
+)
+from ..services.s3_broker import (
+    complete_multipart,
+    delete_fixture,
+    get_presigned_part_url,
+    init_multipart,
+    list_fixture_files,
+    list_fixture_ids,
+)
 
 router = APIRouter(prefix="/fixtures", tags=["fixtures"])
+
+
+@router.get("", summary="List fixture IDs")
+async def list_fixtures() -> FixtureIdListResponse:
+    """Return all fixture IDs (top-level S3 prefixes under fixtures/)."""
+    return await list_fixture_ids()
+
+
+@router.get("/{fixture_id}", summary="List files in a fixture")
+async def list_fixture(fixture_id: str) -> FixtureFileListResponse:
+    """Return all files stored under a specific fixture ID."""
+    return await list_fixture_files(fixture_id)
 
 
 @router.delete(

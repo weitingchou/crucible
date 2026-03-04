@@ -103,6 +103,22 @@ class TestRunResponse(BaseModel):
     strategy: str
 
 
+class FixtureIdListResponse(BaseModel):
+    fixture_ids: list[str]
+
+
+class FixtureFileSummary(BaseModel):
+    name: str
+    key: str
+    last_modified: str
+    size: int
+
+
+class FixtureFileListResponse(BaseModel):
+    fixture_id: str
+    files: list[FixtureFileSummary]
+
+
 class MultipartInitResponse(BaseModel):
     upload_id: str
     key: str

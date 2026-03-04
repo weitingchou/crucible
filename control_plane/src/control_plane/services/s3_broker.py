@@ -11,6 +11,31 @@ def _key(fixture_id: str, file_name: str) -> str:
     return f"fixtures/{fixture_id}/{file_name}"
 
 
+async def list_fixture_ids() -> dict:
+    paginator = _s3.get_paginator("list_objects_v2")
+    fixture_ids = [
+        prefix["Prefix"].removeprefix("fixtures/").rstrip("/")
+        for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix="fixtures/", Delimiter="/")
+        for prefix in page.get("CommonPrefixes", [])
+    ]
+    return {"fixture_ids": fixture_ids}
+
+
+async def list_fixture_files(fixture_id: str) -> dict:
+    paginator = _s3.get_paginator("list_objects_v2")
+    files = [
+        {
+            "name": obj["Key"].removeprefix(f"fixtures/{fixture_id}/"),
+            "key": obj["Key"],
+            "last_modified": obj["LastModified"].isoformat(),
+            "size": obj["Size"],
+        }
+        for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix=f"fixtures/{fixture_id}/")
+        for obj in page.get("Contents", [])
+    ]
+    return {"fixture_id": fixture_id, "files": files}
+
+
 async def init_multipart(fixture_id: str, file_name: str) -> dict:
     key = _key(fixture_id, file_name)
     response = _s3.create_multipart_upload(Bucket=settings.s3_bucket, Key=key)
