@@ -30,6 +30,19 @@ async def get_test_plan(name: str) -> dict:
     return plan
 
 
+@router.delete(
+    "/{name}",
+    status_code=204,
+    summary="Delete a test plan",
+    responses={404: {"description": "Test plan not found"}},
+)
+async def delete_test_plan(name: str) -> None:
+    """Delete a specific test plan from S3."""
+    deleted = await s3_broker.delete_plan(name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Test plan '{name}' not found.")
+
+
 @router.post("", status_code=201, summary="Create a test plan (JSON)")
 async def create_test_plan(plan: TestPlan) -> PlanKey:
     """Validate a test plan submitted as JSON and store it in S3."""

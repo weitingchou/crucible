@@ -74,6 +74,30 @@ async def list_plans() -> dict:
     return {"plans": plans}
 
 
+async def delete_plan(name: str) -> bool:
+    key = f"plans/{name}"
+    try:
+        _s3.head_object(Bucket=settings.s3_bucket, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+    _s3.delete_object(Bucket=settings.s3_bucket, Key=key)
+    return True
+
+
+async def delete_fixture(fixture_id: str, file_name: str) -> bool:
+    key = _key(fixture_id, file_name)
+    try:
+        _s3.head_object(Bucket=settings.s3_bucket, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+    _s3.delete_object(Bucket=settings.s3_bucket, Key=key)
+    return True
+
+
 async def get_plan(name: str) -> dict | None:
     key = f"plans/{name}"
     try:

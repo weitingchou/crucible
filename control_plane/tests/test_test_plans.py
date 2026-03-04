@@ -23,6 +23,7 @@ VALID_PLAN = {
 SAVE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.save_plan"
 LIST_PLANS_PATH = "control_plane.routers.test_plans.s3_broker.list_plans"
 GET_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.get_plan"
+DELETE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.delete_plan"
 
 
 @pytest.fixture
@@ -186,4 +187,36 @@ def test_get_plan_returns_404_when_not_found():
     with patch(GET_PLAN_PATH, new_callable=AsyncMock) as m:
         m.return_value = None
         response = client.get("/test-plans/nonexistent")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# DELETE /test-plans/{name}
+# ---------------------------------------------------------------------------
+
+def test_delete_plan_returns_204():
+    with patch(DELETE_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = True
+        response = client.delete("/test-plans/smoke-test")
+    assert response.status_code == 204
+
+
+def test_delete_plan_returns_no_body():
+    with patch(DELETE_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = True
+        response = client.delete("/test-plans/smoke-test")
+    assert response.content == b""
+
+
+def test_delete_plan_passes_correct_name_to_broker():
+    with patch(DELETE_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = True
+        client.delete("/test-plans/smoke-test")
+    m.assert_called_once_with("smoke-test")
+
+
+def test_delete_plan_returns_404_when_not_found():
+    with patch(DELETE_PLAN_PATH, new_callable=AsyncMock) as m:
+        m.return_value = False
+        response = client.delete("/test-plans/nonexistent")
     assert response.status_code == 404

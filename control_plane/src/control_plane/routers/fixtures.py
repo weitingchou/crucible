@@ -1,9 +1,24 @@
 from fastapi import APIRouter
 
+from fastapi import HTTPException
+
 from ..models import MultipartCompleteResponse, MultipartInitResponse, PartInfo, PresignedUrlResponse
-from ..services.s3_broker import complete_multipart, get_presigned_part_url, init_multipart
+from ..services.s3_broker import complete_multipart, delete_fixture, get_presigned_part_url, init_multipart
 
 router = APIRouter(prefix="/fixtures", tags=["fixtures"])
+
+
+@router.delete(
+    "/{fixture_id}/{file_name}",
+    status_code=204,
+    summary="Delete a fixture file",
+    responses={404: {"description": "Fixture not found"}},
+)
+async def delete_fixture_file(fixture_id: str, file_name: str) -> None:
+    """Delete a specific fixture file from S3."""
+    deleted = await delete_fixture(fixture_id, file_name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Fixture '{fixture_id}/{file_name}' not found.")
 
 
 @router.post("/{fixture_id}/{file_name}/multipart/init", summary="Initiate multipart upload")
