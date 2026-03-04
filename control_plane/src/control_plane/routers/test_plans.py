@@ -5,18 +5,23 @@ from fastapi import APIRouter, HTTPException, UploadFile
 
 from crucible_lib.schemas.test_plan import TestPlan
 
+from ..models import PlanKey, PlanListResponse
 from ..services import s3_broker
 
 router = APIRouter(prefix="/test-plans", tags=["test-plans"])
 
 
-@router.get("")
-async def list_test_plans() -> dict:
-    """List all uploaded test plans."""
+@router.get("", summary="List test plans")
+async def list_test_plans() -> PlanListResponse:
+    """Return metadata for every test plan stored in S3."""
     return await s3_broker.list_plans()
 
 
-@router.get("/{name}")
+@router.get(
+    "/{name}",
+    summary="Get a test plan",
+    responses={404: {"description": "Test plan not found"}},
+)
 async def get_test_plan(name: str) -> dict:
     """Return the parsed content of a specific test plan."""
     plan = await s3_broker.get_plan(name)
@@ -25,14 +30,16 @@ async def get_test_plan(name: str) -> dict:
     return plan
 
 
-@router.post("", status_code=201)
-async def create_test_plan(plan: TestPlan) -> dict:
+@router.post("", status_code=201, summary="Create a test plan (JSON)")
+async def create_test_plan(plan: TestPlan) -> PlanKey:
+    """Validate a test plan submitted as JSON and store it in S3."""
     content = yaml.dump(plan.model_dump()).encode()
     return await s3_broker.save_plan(plan.name, content)
 
 
-@router.post("/upload", status_code=201)
-async def upload_test_plan(file: UploadFile) -> dict:
+@router.post("/upload", status_code=201, summary="Upload a test plan (YAML file)")
+async def upload_test_plan(file: UploadFile) -> PlanKey:
+    """Validate an uploaded YAML file against the test plan schema and store it in S3."""
     content = await file.read()
     try:
         data = yaml.safe_load(content)

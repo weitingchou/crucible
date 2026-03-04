@@ -1,33 +1,43 @@
 from fastapi import APIRouter
 
+from ..models import MultipartCompleteResponse, MultipartInitResponse, PartInfo, PresignedUrlResponse
 from ..services.s3_broker import complete_multipart, get_presigned_part_url, init_multipart
 
 router = APIRouter(prefix="/fixtures", tags=["fixtures"])
 
 
-@router.post("/{fixture_id}/{file_name}/multipart/init")
-async def init_upload(fixture_id: str, file_name: str) -> dict:
-    """Create an S3 multipart upload and return the upload_id."""
+@router.post("/{fixture_id}/{file_name}/multipart/init", summary="Initiate multipart upload")
+async def init_upload(fixture_id: str, file_name: str) -> MultipartInitResponse:
+    """Create an S3 multipart upload session. Returns the `upload_id` required
+    for all subsequent part and completion requests."""
     return await init_multipart(fixture_id, file_name)
 
 
-@router.get("/{fixture_id}/{file_name}/multipart/{upload_id}/part/{part_number}")
+@router.get(
+    "/{fixture_id}/{file_name}/multipart/{upload_id}/part/{part_number}",
+    summary="Get pre-signed URL for a part",
+)
 async def presigned_part(
     fixture_id: str,
     file_name: str,
     upload_id: str,
     part_number: int,
-) -> dict:
-    """Return a pre-signed URL the client uses to upload a single part directly to S3."""
+) -> PresignedUrlResponse:
+    """Return a pre-signed S3 URL valid for 1 hour. The client uses this URL to
+    `PUT` a single part **directly to S3**, bypassing this server entirely."""
     return await get_presigned_part_url(fixture_id, file_name, upload_id, part_number)
 
 
-@router.post("/{fixture_id}/{file_name}/multipart/{upload_id}/complete")
+@router.post(
+    "/{fixture_id}/{file_name}/multipart/{upload_id}/complete",
+    summary="Complete multipart upload",
+)
 async def complete_upload(
     fixture_id: str,
     file_name: str,
     upload_id: str,
-    parts: list[dict],
-) -> dict:
-    """Finalise the multipart upload after all parts have been sent."""
+    parts: list[PartInfo],
+) -> MultipartCompleteResponse:
+    """Finalise the multipart upload. Pass the list of `{PartNumber, ETag}` objects
+    returned by S3 for each successfully uploaded part."""
     return await complete_multipart(fixture_id, file_name, upload_id, parts)
