@@ -18,7 +18,9 @@ test_environment:
   component_spec:
     type: doris
     cluster_info:
-      host: localhost:9060
+      host: doris-fe:9030
+      username: root
+      password: ""
   fixtures:
     - fixture_id: tpch-sf001-customer
       table: customer

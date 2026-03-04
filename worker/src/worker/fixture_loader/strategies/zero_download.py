@@ -7,9 +7,9 @@ class ZeroDownloadStrategy:
     No data passes through the Celery worker. Targets: Doris, Trino.
 
     Connection details come from component_spec.cluster_info in the test plan.
-    The host field follows the format "hostname:port" (e.g. "localhost:9030").
-    DB credentials (db_user, db_password) and S3 credentials (s3_access_key,
-    s3_secret_key) are injected at runtime via cluster_info extras.
+    The host field follows the format "hostname:port" (e.g. "doris-fe:9030").
+    DB credentials are read from cluster_info.username / cluster_info.password.
+    S3 credentials (s3_access_key, s3_secret_key) are injected at runtime.
     """
 
     def load(self, s3_uris: list[str], config: dict) -> None:
@@ -17,8 +17,8 @@ class ZeroDownloadStrategy:
         conn = pymysql.connect(
             host=host,
             port=port,
-            user=config["db_user"],
-            password=config["db_password"],
+            user=config["username"],
+            password=config["password"],
             database=config["target_db"],
         )
         try:

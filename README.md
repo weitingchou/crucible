@@ -162,6 +162,8 @@ test_environment:
     type: doris
     cluster_info:
       host: localhost:9060
+      username: root
+      password: ""
   fixtures:
     - fixture_id: my-fixture-001
       table: sales

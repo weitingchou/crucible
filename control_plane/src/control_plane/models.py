@@ -13,6 +13,8 @@ class ClusterInfo(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     host: str
+    username: str
+    password: str
 
 
 class NodeSpec(BaseModel):
