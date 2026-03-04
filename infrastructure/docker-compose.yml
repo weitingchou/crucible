@@ -109,6 +109,64 @@ services:
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  # ── Apache Doris (local e2e testing only) ────────────────────────────────────
+  # Start with: docker compose --profile doris up
+  doris-fe:
+    profiles: [doris]
+    image: apache/doris:2.1.7-fe-x86_64
+    hostname: doris-fe
+    environment:
+      FE_SERVERS: "fe1:doris-fe:9010"
+      FE_ID: "1"
+    ports:
+      - "8030:8030"   # FE web UI
+      - "9030:9030"   # MySQL-compatible query port
+    volumes:
+      - doris_fe_meta:/opt/apache-doris/fe/doris-meta
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/bootstrap | grep -q '\"code\":0'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  doris-be:
+    profiles: [doris]
+    image: apache/doris:2.1.7-be-x86_64
+    hostname: doris-be
+    environment:
+      FE_SERVERS: "fe1:doris-fe:9010"
+      BE_ADDR: "doris-be:9050"
+    ports:
+      - "8040:8040"   # BE web UI
+      - "9060:9060"   # BE thrift RPC
+    volumes:
+      - doris_be_storage:/opt/apache-doris/be/storage
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+
+  # Runs once to register the BE with the FE cluster.
+  # Automatically exits after registration; restart: on-failure retries if FE
+  # is not yet accepting connections.
+  doris-init:
+    profiles: [doris]
+    image: mysql:8.0
+    command: >
+      bash -c "
+        until mysql -h doris-fe -P 9030 -u root --connect-timeout=5 -e 'SELECT 1' >/dev/null 2>&1; do
+          echo 'Waiting for Doris FE to accept connections...'; sleep 5;
+        done;
+        mysql -h doris-fe -P 9030 -u root -e \"ALTER SYSTEM ADD BACKEND 'doris-be:9050';\"
+        echo 'Doris BE registered successfully.'
+      "
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    restart: on-failure
+
 volumes:
   postgres_data:
   minio_data:
+  doris_fe_meta:
+  doris_be_storage:

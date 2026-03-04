@@ -282,3 +282,54 @@ uv run mypy control_plane/src worker/src lib/src
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+---
+
+## 4. End-to-End Testing with Apache Doris
+
+The Doris FE, BE, and init services are gated behind the `doris` Compose profile so they don't start during normal development.
+
+### Start the full stack including Doris
+
+```bash
+docker compose -f infrastructure/docker-compose.yml --profile doris up
+```
+
+To start Doris alone (without the Crucible services):
+
+```bash
+docker compose -f infrastructure/docker-compose.yml --profile doris up doris-fe doris-be doris-init
+```
+
+### Verify the Doris cluster is healthy
+
+Wait ~30 seconds for FE to initialise, then confirm the BE is registered and alive:
+
+```bash
+mysql -h 127.0.0.1 -P 9030 -u root -e "SHOW BACKENDS\G"
+# Expect: Alive: true
+```
+
+### Apple Silicon (M-series) note
+
+The default images are `x86_64` and run under Rosetta emulation. If startup is slow or fails, switch to the native ARM images in `docker-compose.yml`:
+
+```
+apache/doris:2.1.7-fe-arm64
+apache/doris:2.1.7-be-arm64
+```
+
+### Resource requirements
+
+Allocate at least **8 GB RAM** to Docker Desktop (Settings → Resources → Memory) before starting Doris. The BE will OOM-kill with less.
+
+### Run the TPC-H e2e test plan
+
+```bash
+# Upload the test plan
+curl -X POST http://localhost:8000/test-plans/upload \
+  -F "file=@tests/plans/tpch_doris.yaml"
+
+# Trigger the test run
+curl -X POST http://localhost:8000/test-runs/plans/tpch_doris
+```
