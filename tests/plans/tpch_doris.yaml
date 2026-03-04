@@ -4,47 +4,44 @@
 #   1. Run tests/setup_tpch_fixtures.py to generate and upload fixtures.
 #   2. Ensure the eight TPC-H tables exist in your Doris database.
 #   3. Upload this file to MinIO, then submit via:
-#        curl -X POST http://localhost:8000/test-runs/plans/tpch_doris.yaml
+#        curl -X POST http://localhost:8000/test-runs/plans/tpch_doris
 #
 # Fixture IDs match what setup_tpch_fixtures.py uploads at --scale 0.01.
 # Adjust the fixture_id values if you used a different scale factor.
 
-name: tpch-doris-e2e
+test_metadata:
+  run_label: "tpch-doris-e2e"
 
 test_environment:
-  component: doris
-  scaling_mode: intra_node
-  worker_count: 2
+  env_type: long-lived
+  target_db: tpch
+  component_spec:
+    type: doris
+    cluster_info:
+      host: localhost:9060
+  fixtures:
+    - fixture_id: tpch-sf001-customer
+      table: customer
+    - fixture_id: tpch-sf001-lineitem
+      table: lineitem
+    - fixture_id: tpch-sf001-nation
+      table: nation
+    - fixture_id: tpch-sf001-orders
+      table: orders
+    - fixture_id: tpch-sf001-part
+      table: part
+    - fixture_id: tpch-sf001-partsupp
+      table: partsupp
+    - fixture_id: tpch-sf001-region
+      table: region
+    - fixture_id: tpch-sf001-supplier
+      table: supplier
 
 execution:
-  - concurrency: 10
-    ramp_up: 30s
-    hold_for: 2m
-
-fixtures:
-  - fixture_id: tpch-sf001-customer
-    component: doris
-    table: customer
-  - fixture_id: tpch-sf001-lineitem
-    component: doris
-    table: lineitem
-  - fixture_id: tpch-sf001-nation
-    component: doris
-    table: nation
-  - fixture_id: tpch-sf001-orders
-    component: doris
-    table: orders
-  - fixture_id: tpch-sf001-part
-    component: doris
-    table: part
-  - fixture_id: tpch-sf001-partsupp
-    component: doris
-    table: partsupp
-  - fixture_id: tpch-sf001-region
-    component: doris
-    table: region
-  - fixture_id: tpch-sf001-supplier
-    component: doris
-    table: supplier
-
-workload: workloads/tpch_queries.sql
+  executor: k6
+  scaling_mode: intra_node
+  concurrency: 10
+  ramp_up: 30s
+  hold_for: 2m
+  workload:
+    - workload_id: tpch-queries
