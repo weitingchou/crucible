@@ -1,0 +1,135 @@
+from unittest.mock import MagicMock, patch
+
+import pytest
+import yaml
+from botocore.exceptions import ClientError
+from fastapi.testclient import TestClient
+
+from control_plane.main import app
+
+client = TestClient(app)
+
+_VALID_PLAN = {
+    "test_metadata": {"run_label": "smoke-test"},
+    "test_environment": {
+        "env_type": "long-lived",
+        "target_db": "tpch",
+        "component_spec": {
+            "type": "doris",
+            "cluster_info": {"host": "doris-fe:9030", "username": "root", "password": ""},
+        },
+        "fixtures": [],
+    },
+    "execution": {
+        "executor": "k6",
+        "scaling_mode": "intra_node",
+        "concurrency": 10,
+        "ramp_up": "30s",
+        "hold_for": "2m",
+        "workload": [],
+    },
+}
+
+_PLAN_BYTES = yaml.dump(_VALID_PLAN).encode()
+
+
+def _no_such_key_error() -> ClientError:
+    return ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}},
+        "GetObject",
+    )
+
+
+def _mock_s3(plan_bytes: bytes):
+    """Return a mock S3 client whose get_object returns the given bytes."""
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {"Body": MagicMock(read=MagicMock(return_value=plan_bytes))}
+    return mock_s3
+
+
+def _mock_celery_result(run_id: str = "abc-123"):
+    mock_result = MagicMock()
+    mock_result.id = run_id
+    return mock_result
+
+
+# ---------------------------------------------------------------------------
+# POST /test-runs/{filename}  — happy path
+# ---------------------------------------------------------------------------
+
+def test_trigger_run_returns_200():
+    mock_s3 = _mock_s3(_PLAN_BYTES)
+    mock_celery = MagicMock()
+    mock_celery.send_task.return_value = _mock_celery_result()
+    with patch("control_plane.services.dispatcher._s3", mock_s3), \
+         patch("control_plane.services.dispatcher._celery", mock_celery):
+        response = client.post("/test-runs/tpch_doris")
+    assert response.status_code == 200
+
+
+def test_trigger_run_returns_run_id_and_strategy():
+    mock_s3 = _mock_s3(_PLAN_BYTES)
+    mock_celery = MagicMock()
+    mock_celery.send_task.return_value = _mock_celery_result("abc-123")
+    with patch("control_plane.services.dispatcher._s3", mock_s3), \
+         patch("control_plane.services.dispatcher._celery", mock_celery):
+        response = client.post("/test-runs/tpch_doris")
+    body = response.json()
+    assert body["run_id"] == "abc-123"
+    assert body["strategy"] == "distributed_vertical"
+
+
+def test_trigger_run_fetches_plan_from_correct_s3_key():
+    mock_s3 = _mock_s3(_PLAN_BYTES)
+    mock_celery = MagicMock()
+    mock_celery.send_task.return_value = _mock_celery_result()
+    with patch("control_plane.services.dispatcher._s3", mock_s3), \
+         patch("control_plane.services.dispatcher._celery", mock_celery):
+        client.post("/test-runs/tpch_doris")
+    mock_s3.get_object.assert_called_once_with(
+        Bucket="project-crucible-storage", Key="plans/tpch_doris"
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /test-runs/{filename}  — plan not found
+# ---------------------------------------------------------------------------
+
+def test_trigger_run_returns_404_when_plan_not_found():
+    mock_s3 = MagicMock()
+    mock_s3.get_object.side_effect = _no_such_key_error()
+    with patch("control_plane.services.dispatcher._s3", mock_s3):
+        response = client.post("/test-runs/nonexistent")
+    assert response.status_code == 404
+
+
+def test_trigger_run_404_includes_plan_name_in_detail():
+    mock_s3 = MagicMock()
+    mock_s3.get_object.side_effect = _no_such_key_error()
+    with patch("control_plane.services.dispatcher._s3", mock_s3):
+        response = client.post("/test-runs/nonexistent")
+    assert "nonexistent" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# POST /test-runs/{filename}  — doubled plans/ prefix
+# ---------------------------------------------------------------------------
+
+def test_trigger_run_with_plans_prefix_in_url_returns_404():
+    """Callers who mistakenly include plans/ in the URL get a 404, not a 500."""
+    mock_s3 = MagicMock()
+    mock_s3.get_object.side_effect = _no_such_key_error()
+    with patch("control_plane.services.dispatcher._s3", mock_s3):
+        response = client.post("/test-runs/plans/tpch_doris")
+    assert response.status_code == 404
+
+
+def test_trigger_run_with_plans_prefix_looks_up_doubled_key():
+    """Verify the actual key used so the error message is traceable."""
+    mock_s3 = MagicMock()
+    mock_s3.get_object.side_effect = _no_such_key_error()
+    with patch("control_plane.services.dispatcher._s3", mock_s3):
+        client.post("/test-runs/plans/tpch_doris")
+    mock_s3.get_object.assert_called_once_with(
+        Bucket="project-crucible-storage", Key="plans/plans/tpch_doris"
+    )

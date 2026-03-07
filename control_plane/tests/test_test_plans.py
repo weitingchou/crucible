@@ -10,14 +10,24 @@ from control_plane.main import app
 client = TestClient(app)
 
 VALID_PLAN = {
-    "name": "smoke-test",
+    "test_metadata": {"run_label": "smoke-test"},
     "test_environment": {
-        "component": "doris",
-        "scaling_mode": "intra_node",
-        "worker_count": 1,
+        "env_type": "long-lived",
+        "target_db": "tpch",
+        "component_spec": {
+            "type": "doris",
+            "cluster_info": {"host": "localhost:9030", "username": "root", "password": ""},
+        },
+        "fixtures": [],
     },
-    "execution": [{"concurrency": 10, "hold_for": "1m"}],
-    "workload": "workloads/tpch_queries.sql",
+    "execution": {
+        "executor": "k6",
+        "scaling_mode": "intra_node",
+        "concurrency": 10,
+        "ramp_up": "30s",
+        "hold_for": "1m",
+        "workload": [],
+    },
 }
 
 SAVE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.save_plan"
@@ -57,8 +67,8 @@ def test_create_plan_saves_valid_yaml(mock_save_plan):
     client.post("/test-plans", json=VALID_PLAN)
     content_arg = mock_save_plan.call_args[0][1]
     parsed = yaml.safe_load(content_arg)
-    assert parsed["name"] == "smoke-test"
-    assert parsed["test_environment"]["component"] == "doris"
+    assert parsed["test_metadata"]["run_label"] == "smoke-test"
+    assert parsed["test_environment"]["component_spec"]["type"] == "doris"
 
 
 def test_create_plan_rejects_missing_required_field():
@@ -67,14 +77,14 @@ def test_create_plan_rejects_missing_required_field():
     assert response.status_code == 422
 
 
-def test_create_plan_rejects_invalid_component():
-    bad = {**VALID_PLAN, "test_environment": {**VALID_PLAN["test_environment"], "component": "oracle"}}
+def test_create_plan_rejects_invalid_executor():
+    bad = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "executor": "unknown"}}
     response = client.post("/test-plans", json=bad)
     assert response.status_code == 422
 
 
 def test_create_plan_rejects_zero_concurrency():
-    bad = {**VALID_PLAN, "execution": [{"concurrency": 0, "hold_for": "1m"}]}
+    bad = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "concurrency": 0}}
     response = client.post("/test-plans", json=bad)
     assert response.status_code == 422
 
@@ -120,7 +130,7 @@ def test_upload_plan_rejects_invalid_yaml():
 
 
 def test_upload_plan_rejects_yaml_failing_schema_validation():
-    bad_plan = {**VALID_PLAN, "test_environment": {**VALID_PLAN["test_environment"], "component": "unknown_db"}}
+    bad_plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "concurrency": 0}}
     response = client.post("/test-plans/upload", files=_yaml_file(bad_plan))
     assert response.status_code == 422
 

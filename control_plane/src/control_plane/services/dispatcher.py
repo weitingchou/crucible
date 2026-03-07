@@ -1,6 +1,8 @@
 import yaml
 import boto3
+from botocore.exceptions import ClientError
 from celery import Celery, chain, signature
+from fastapi import HTTPException
 
 from ..config import settings
 
@@ -12,7 +14,12 @@ _celery = Celery(broker=settings.celery_broker_url, backend=settings.celery_resu
 
 
 async def dispatch_test_run(filename: str) -> dict:
-    plan_bytes = _s3.get_object(Bucket=settings.s3_bucket, Key=f"plans/{filename}")["Body"].read()
+    try:
+        plan_bytes = _s3.get_object(Bucket=settings.s3_bucket, Key=f"plans/{filename}")["Body"].read()
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            raise HTTPException(status_code=404, detail=f"Test plan '{filename}' not found.")
+        raise
     plan: dict = yaml.safe_load(plan_bytes)
 
     mode: str = plan.get("execution", {}).get("scaling_mode", "intra_node")

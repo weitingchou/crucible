@@ -204,7 +204,7 @@ curl -X PUT "<presigned_url>" --upload-file sales_part1.parquet
 Pass the S3 key returned in Step 1:
 
 ```bash
-curl -X POST http://localhost:8000/test-runs/plans/doris-smoke-test
+curl -X POST http://localhost:8000/test-runs/doris-smoke-test
 # {"run_id": "...", "strategy": "distributed_vertical"}
 ```
 
@@ -333,5 +333,5 @@ curl -X POST http://localhost:8000/test-plans/upload \
   -F "file=@tests/plans/tpch_doris.yaml"
 
 # Trigger the test run
-curl -X POST http://localhost:8000/test-runs/plans/tpch_doris
+curl -X POST http://localhost:8000/test-runs/tpch_doris
 ```
