@@ -115,8 +115,14 @@ services:
     profiles: [doris]
     image: apache/doris:fe-2.1.7
     hostname: doris-fe
-    environment:
-      BUILD_TYPE: "k8s"
+    entrypoint: >
+      bash -c "
+        IP=$$(hostname -i | awk '{print $$1}') &&
+        SUBNET=$$(echo $$IP | awk -F. '{print $$1\".\"$$2\".\"$$3\".0/24\"}') &&
+        echo \"priority_networks = $$SUBNET\" >> /opt/apache-doris/fe/conf/fe.conf &&
+        export BUILD_TYPE=k8s &&
+        bash /usr/local/bin/init_fe.sh
+      "
     ports:
       - "8030:8030"   # FE web UI
       - "9030:9030"   # MySQL-compatible query port
@@ -127,14 +133,20 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 60s
 
   doris-be:
     profiles: [doris]
     image: apache/doris:be-2.1.7
     hostname: doris-be
-    environment:
-      BUILD_TYPE: "k8s"
+    entrypoint: >
+      bash -c "
+        IP=$$(hostname -i | awk '{print $$1}') &&
+        FE_IP=$$(getent hosts doris-fe | awk '{print $$1}') &&
+        export FE_SERVERS=\"fe1:$$FE_IP:9010\" &&
+        export BE_ADDR=\"$$IP:9050\" &&
+        bash /usr/local/bin/init_be.sh
+      "
     ports:
       - "8040:8040"   # BE web UI
       - "9060:9060"   # BE thrift RPC
@@ -161,6 +173,8 @@ services:
     depends_on:
       doris-fe:
         condition: service_healthy
+      doris-be:
+        condition: service_started
     restart: on-failure
 
 volumes:
