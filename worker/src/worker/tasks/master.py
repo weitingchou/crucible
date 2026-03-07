@@ -13,12 +13,8 @@ def run_master_task(self, plan: dict, mode: str) -> dict:
       2. Hydrate the SUT with fixture data via the FixtureLoader.
       3. Launch Taurus as master (intra-node or inter-node).
     """
-    component: str = plan["test_environment"]["component_spec"]
-
     # ── 1. Fixture loading ──────────────────────────────────────────────────
-    for fixture in plan["test_environment"].get("fixtures", []):
-        loader = FixtureLoader(component=component, config=fixture)
-        loader.load()
+    FixtureLoader(plan).load()
 
     # ── 2. Taurus orchestration ─────────────────────────────────────────────
     overrides: dict = {"execution": plan["execution"]}
