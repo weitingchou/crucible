@@ -13,10 +13,10 @@ def run_master_task(self, plan: dict, mode: str) -> dict:
       2. Hydrate the SUT with fixture data via the FixtureLoader.
       3. Launch Taurus as master (intra-node or inter-node).
     """
-    component: str = plan["test_environment"]["component"]
+    component: str = plan["test_environment"]["component_spec"]
 
     # ── 1. Fixture loading ──────────────────────────────────────────────────
-    for fixture in plan.get("fixtures", []):
+    for fixture in plan["test_environment"].get("fixtures", []):
         loader = FixtureLoader(component=component, config=fixture)
         loader.load()
 
@@ -24,12 +24,12 @@ def run_master_task(self, plan: dict, mode: str) -> dict:
     overrides: dict = {"execution": plan["execution"]}
 
     if mode == "intra_node":
-        overrides["execution"][0].update({
+        overrides["execution"].update({
             "master": True,
             "workers": plan["test_environment"].get("worker_count", 1),
         })
     elif mode == "inter_node":
-        overrides["execution"][0].update({
+        overrides["execution"].update({
             "master": True,
             "expect-workers": plan["test_environment"].get("cluster_size", 1) - 1,
         })

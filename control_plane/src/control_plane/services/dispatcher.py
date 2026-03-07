@@ -15,7 +15,7 @@ async def dispatch_test_run(filename: str) -> dict:
     plan_bytes = _s3.get_object(Bucket=settings.s3_bucket, Key=filename)["Body"].read()
     plan: dict = yaml.safe_load(plan_bytes)
 
-    mode: str = plan.get("test_environment", {}).get("scaling_mode", "intra_node")
+    mode: str = plan.get("execution", {}).get("scaling_mode", "intra_node")
 
     if mode == "inter_node":
         cluster_size: int = plan["test_environment"].get("cluster_size", 2)
