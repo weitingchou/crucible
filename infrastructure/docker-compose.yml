@@ -113,11 +113,10 @@ services:
   # Start with: docker compose --profile doris up
   doris-fe:
     profiles: [doris]
-    image: apache/doris:2.1.7-fe-x86_64
+    image: apache/doris:fe-2.1.7
     hostname: doris-fe
     environment:
-      FE_SERVERS: "fe1:doris-fe:9010"
-      FE_ID: "1"
+      BUILD_TYPE: "k8s"
     ports:
       - "8030:8030"   # FE web UI
       - "9030:9030"   # MySQL-compatible query port
@@ -132,11 +131,10 @@ services:
 
   doris-be:
     profiles: [doris]
-    image: apache/doris:2.1.7-be-x86_64
+    image: apache/doris:be-2.1.7
     hostname: doris-be
     environment:
-      FE_SERVERS: "fe1:doris-fe:9010"
-      BE_ADDR: "doris-be:9050"
+      BUILD_TYPE: "k8s"
     ports:
       - "8040:8040"   # BE web UI
       - "9060:9060"   # BE thrift RPC
