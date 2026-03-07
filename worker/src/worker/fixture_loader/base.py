@@ -33,6 +33,8 @@ class FixtureLoader:
     def load(self) -> None:
         s3 = boto3.client("s3", region_name=settings.aws_region)
         strategy = self._get_strategy()
+        base_config = {**self.cluster_info, "target_db": self.target_db}
+        strategy.init(base_config)
 
         for fixture in self.fixtures:
             fixture_id: str = fixture["fixture_id"]
@@ -48,7 +50,13 @@ class FixtureLoader:
             if not s3_uris:
                 raise FileNotFoundError(f"No fixture files found under prefix: {prefix}")
 
-            config = {**self.cluster_info, "target_db": self.target_db, **fixture}
+            config = {
+                **self.cluster_info,
+                "target_db": self.target_db,
+                "s3_access_key": settings.aws_access_key_id,
+                "s3_secret_key": settings.aws_secret_access_key,
+                **fixture,
+            }
             strategy.load(s3_uris, config)
 
     def _get_strategy(self):

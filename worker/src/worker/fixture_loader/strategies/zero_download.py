@@ -1,7 +1,9 @@
 import pymysql
 
+from . import FixtureStrategy
 
-class ZeroDownloadStrategy:
+
+class ZeroDownloadStrategy(FixtureStrategy):
     """MPP path: issues SQL to the SUT so the cluster pulls Parquet from S3 directly.
 
     No data passes through the Celery worker. Targets: Doris, Trino.
@@ -11,6 +13,19 @@ class ZeroDownloadStrategy:
     DB credentials are read from cluster_info.username / cluster_info.password.
     S3 credentials (s3_access_key, s3_secret_key) are injected at runtime.
     """
+
+    def init(self, config: dict) -> None:
+        host, port = _parse_host(config["host"])
+        conn = pymysql.connect(
+            host=host, port=port,
+            user=config["username"], password=config["password"],
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"CREATE DATABASE IF NOT EXISTS `{config['target_db']}`")
+            conn.commit()
+        finally:
+            conn.close()
 
     def load(self, s3_uris: list[str], config: dict) -> None:
         host, port = _parse_host(config["host"])

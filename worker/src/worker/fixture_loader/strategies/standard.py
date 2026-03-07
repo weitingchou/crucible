@@ -1,4 +1,7 @@
-class StandardStrategy:
+from . import FixtureStrategy
+
+
+class StandardStrategy(FixtureStrategy):
     """Fallback ingestion path for database types not yet covered by a dedicated strategy."""
 
     def load(self, s3_uris: list[str], config: dict) -> None:

@@ -5,9 +5,10 @@ from cassandra.cluster import Cluster
 from cassandra.concurrent import execute_concurrent_with_args
 
 from worker.config import settings
+from . import FixtureStrategy
 
 
-class StreamingStrategy:
+class StreamingStrategy(FixtureStrategy):
     """NoSQL path: streams CSV rows from S3 directly into Cassandra.
 
     Data flows: S3 → worker RAM (single line buffer) → Cassandra.
