@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     s3_bucket: str = "project-crucible-storage"
     aws_region: str = "us-east-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/crucible"
 
