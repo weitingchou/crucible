@@ -12,7 +12,7 @@ _celery = Celery(broker=settings.celery_broker_url, backend=settings.celery_resu
 
 
 async def dispatch_test_run(filename: str) -> dict:
-    plan_bytes = _s3.get_object(Bucket=settings.s3_bucket, Key=filename)["Body"].read()
+    plan_bytes = _s3.get_object(Bucket=settings.s3_bucket, Key=f"plans/{filename}")["Body"].read()
     plan: dict = yaml.safe_load(plan_bytes)
 
     mode: str = plan.get("execution", {}).get("scaling_mode", "intra_node")

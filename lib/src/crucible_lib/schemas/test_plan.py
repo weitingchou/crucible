@@ -1,35 +1,79 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class ExecutionConfig(BaseModel):
-    concurrency: int = Field(..., gt=0)
-    hold_for: str  # e.g. "5m"
-    ramp_up: str = "30s"
+class TestMetadata(BaseModel):
+    run_label: str
 
 
-class FixtureConfig(BaseModel):
+class ClusterInfo(BaseModel):
+    """Bring-Your-Own connection details for a pre-existing cluster."""
+
+    model_config = ConfigDict(extra="allow")
+
+    host: str
+    username: str
+    password: str
+
+
+class NodeSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    count: int = 1
+
+
+class ClusterSpec(BaseModel):
+    """Provision-For-Me spec for an ephemeral cluster."""
+
+    model_config = ConfigDict(extra="allow")
+
+    version: str | None = None
+    frontend_node: NodeSpec | None = None
+
+
+class ComponentSpec(BaseModel):
+    type: str
+    cluster_info: ClusterInfo | None = None
+    cluster_spec: ClusterSpec | None = None
+
+    @model_validator(mode="after")
+    def _mutually_exclusive_cluster_fields(self) -> "ComponentSpec":
+        has_info = self.cluster_info is not None
+        has_spec = self.cluster_spec is not None
+        if has_info and has_spec:
+            raise ValueError("'cluster_info' and 'cluster_spec' are mutually exclusive; provide only one.")
+        if not has_info and not has_spec:
+            raise ValueError("One of 'cluster_info' or 'cluster_spec' must be provided.")
+        return self
+
+
+class FixtureItem(BaseModel):
     fixture_id: str
-    component: str
     table: str
-    # Columns required for Cassandra streaming; omitted for MPP zero-download.
-    columns: list[str] = Field(default_factory=list)
 
 
 class TestEnvironment(BaseModel):
-    component: Literal["doris", "trino", "cassandra", "generic"]
-    scaling_mode: Literal["intra_node", "inter_node"] = "intra_node"
-    # intra_node: number of local k6 processes to spawn
-    worker_count: int = 1
-    # inter_node: total nodes in the fleet (master + N-1 workers)
-    cluster_size: int = 2
+    env_type: Literal["long-lived", "disposable"]
+    component_spec: ComponentSpec
+    target_db: str
+    fixtures: list[FixtureItem] = Field(default_factory=list)
+
+
+class WorkloadItem(BaseModel):
+    workload_id: str
+
+
+class ExecutionConfig(BaseModel):
+    executor: Literal["k6", "locust"]
+    scaling_mode: Literal["intra_node", "inter_node"]
+    concurrency: int = Field(..., gt=0)
+    ramp_up: str
+    hold_for: str
+    workload: list[WorkloadItem]
 
 
 class TestPlan(BaseModel):
-    name: str
+    test_metadata: TestMetadata
     test_environment: TestEnvironment
-    execution: list[ExecutionConfig]
-    fixtures: list[FixtureConfig] = Field(default_factory=list)
-    # S3 key of the annotated SQL file consumed by the k6 driver.
-    workload: str | None = None
+    execution: ExecutionConfig

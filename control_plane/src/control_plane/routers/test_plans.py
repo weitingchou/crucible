@@ -3,9 +3,8 @@ from pathlib import Path
 import yaml
 from fastapi import APIRouter, HTTPException, UploadFile
 
-from crucible_lib.schemas.test_plan import TestPlan
-
 from ..models import PlanKey, PlanListResponse
+from ..schemas.test_plan import TestPlan
 from ..services import s3_broker
 
 router = APIRouter(prefix="/test-plans", tags=["test-plans"])
@@ -47,7 +46,7 @@ async def delete_test_plan(name: str) -> None:
 async def create_test_plan(plan: TestPlan) -> PlanKey:
     """Validate a test plan submitted as JSON and store it in S3."""
     content = yaml.dump(plan.model_dump()).encode()
-    return await s3_broker.save_plan(plan.name, content)
+    return await s3_broker.save_plan(plan.test_metadata.run_label, content)
 
 
 @router.post("/upload", status_code=201, summary="Upload a test plan (YAML file)")
