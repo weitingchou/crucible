@@ -23,13 +23,14 @@
  */
 
 import sql from 'k6/x/sql';
+import driver from 'k6/x/sql/driver/mysql';
 import { check } from 'k6';
 import { Trend } from 'k6/metrics';
 
 // ── Connection setup (runs once per VU initialisation) ───────────────────────
 
 const DB_DSN = `${__ENV.DB_USER}:${__ENV.DB_PASS}@tcp(${__ENV.DB_HOST}:${__ENV.DB_PORT || '3306'})/${__ENV.DB_NAME}`;
-const db = sql.open('mysql', DB_DSN);
+const db = sql.open(driver, DB_DSN);
 
 // ── Query parsing (runs once at script load time) ─────────────────────────────
 
@@ -56,7 +57,7 @@ export default function () {
   const start = Date.now();
 
   try {
-    const rows = sql.query(db, query.text);
+    const rows = db.query(query.text);
     trends[query.name].add(Date.now() - start);
     check(rows, { [`${query.name} returned result`]: (r) => r !== null });
   } catch (err) {

@@ -55,6 +55,7 @@ class FixtureLoader:
                 "target_db": self.target_db,
                 "s3_access_key": settings.aws_access_key_id,
                 "s3_secret_key": settings.aws_secret_access_key,
+                "s3_endpoint": settings.aws_endpoint_url,
                 **fixture,
             }
             strategy.load(s3_uris, config)

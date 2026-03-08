@@ -36,19 +36,32 @@ class ZeroDownloadStrategy(FixtureStrategy):
             password=config["password"],
             database=config["target_db"],
         )
+        endpoint_prop = f'"s3.endpoint" = "{config["s3_endpoint"]}",' if config.get("s3_endpoint") else ""
+        path_style = "true" if config.get("s3_endpoint") else "false"
+
+        def _s3_select(uri: str) -> str:
+            return f"""SELECT * FROM S3(
+                            "uri"            = "{uri}",
+                            "s3.access_key"  = "{config['s3_access_key']}",
+                            "s3.secret_key"  = "{config['s3_secret_key']}",
+                            "s3.region"      = "{config.get('s3_region', 'ap-southeast-1')}",
+                            {endpoint_prop}
+                            "use_path_style" = "{path_style}",
+                            "format"         = "parquet"
+                        )"""
+
         try:
             with conn.cursor() as cur:
-                for uri in s3_uris:
-                    sql = f"""
-                        INSERT INTO {config['table']}
-                        SELECT * FROM S3(
-                            "uri"        = "{uri}",
-                            "ACCESS_KEY" = "{config['s3_access_key']}",
-                            "SECRET_KEY" = "{config['s3_secret_key']}",
-                            "format"     = "parquet"
-                        );
-                    """
-                    cur.execute(sql)
+                # Create the table from parquet schema (CTAS), then insert remaining files.
+                cur.execute(f"DROP TABLE IF EXISTS `{config['table']}`")
+                cur.execute(
+                    f"CREATE TABLE `{config['table']}` ENGINE=OLAP "
+                    f"DISTRIBUTED BY RANDOM BUCKETS 1 "
+                    f'PROPERTIES ("replication_num" = "1") '
+                    f"AS {_s3_select(s3_uris[0])}"
+                )
+                for uri in s3_uris[1:]:
+                    cur.execute(f"INSERT INTO `{config['table']}` {_s3_select(uri)}")
             conn.commit()
         finally:
             conn.close()

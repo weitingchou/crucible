@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
+    aws_endpoint_url: str = ""
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/crucible"
 

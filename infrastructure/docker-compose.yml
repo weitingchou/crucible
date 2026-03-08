@@ -126,8 +126,10 @@ services:
     ports:
       - "8030:8030"   # FE web UI
       - "9030:9030"   # MySQL-compatible query port
-    volumes:
-      - doris_fe_meta:/opt/apache-doris/fe/doris-meta
+    # No named volume — ephemeral meta dir ensures a clean BDB state on every
+    # restart, avoiding BDB-JE UNKNOWN state from stale node identity.
+    tmpfs:
+      - /opt/apache-doris/fe/doris-meta
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/bootstrap | grep -q '\"code\":0'"]
       interval: 15s
@@ -139,46 +141,28 @@ services:
     profiles: [doris]
     image: apache/doris:be-2.1.7
     hostname: doris-be
+    privileged: true
     entrypoint: >
       bash -c "
+        sysctl -w vm.max_map_count=2000000 &&
+        printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/swapon && chmod +x /usr/local/bin/swapon &&
         IP=$$(hostname -i | awk '{print $$1}') &&
         FE_IP=$$(getent hosts doris-fe | awk '{print $$1}') &&
         export FE_SERVERS=\"fe1:$$FE_IP:9010\" &&
         export BE_ADDR=\"$$IP:9050\" &&
-        bash /usr/local/bin/init_be.sh
+        cd /usr/local/bin && exec bash entry_point.sh
       "
     ports:
       - "8040:8040"   # BE web UI
       - "9060:9060"   # BE thrift RPC
-    volumes:
-      - doris_be_storage:/opt/apache-doris/be/storage
+    tmpfs:
+      - /opt/apache-doris/be/storage
     depends_on:
       doris-fe:
         condition: service_healthy
 
-  # Runs once to register the BE with the FE cluster.
-  # Automatically exits after registration; restart: on-failure retries if FE
-  # is not yet accepting connections.
-  doris-init:
-    profiles: [doris]
-    image: mysql:8.0
-    command: >
-      bash -c "
-        until mysql -h doris-fe -P 9030 -u root --connect-timeout=5 -e 'SELECT 1' >/dev/null 2>&1; do
-          echo 'Waiting for Doris FE to accept connections...'; sleep 5;
-        done;
-        mysql -h doris-fe -P 9030 -u root -e \"ALTER SYSTEM ADD BACKEND 'doris-be:9050';\"
-        echo 'Doris BE registered successfully.'
-      "
-    depends_on:
-      doris-fe:
-        condition: service_healthy
-      doris-be:
-        condition: service_started
-    restart: on-failure
+  # BE self-registers via entry_point.sh using its IP — no separate init container needed.
 
 volumes:
   postgres_data:
   minio_data:
-  doris_fe_meta:
-  doris_be_storage:
