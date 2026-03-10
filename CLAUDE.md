@@ -51,3 +51,79 @@ The Celery worker contains four sub-components that run in sequence:
 **SQL workload files use `-- @name: QueryName` annotations** to allow the k6 driver to parse, name, and track per-query latency as individual Prometheus `Trend` metrics.
 
 **Environment injection:** The worker silently injects DB credentials, endpoints, and S3 URIs at runtime. End users never see infrastructure details.
+
+## Local Development Environment Setup
+
+Run these steps on any new machine to get a fully working local environment.
+
+### Prerequisites
+
+- Docker + Docker Compose v2 (`docker compose`)
+- `curl` (for installing uv)
+
+### 1. Install uv and Python 3.12
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"   # or add permanently to ~/.zshrc / ~/.bashrc
+uv python install 3.12
+```
+
+### 2. Install Python dependencies
+
+From the repo root:
+
+```bash
+uv sync
+```
+
+This creates `.venv` with all workspace packages (`crucible-lib`, `crucible-control-plane`, `crucible-worker`) and their dependencies installed under Python 3.12.
+
+Activate when needed:
+```bash
+source .venv/bin/activate
+```
+
+### 3. Start infrastructure services
+
+```bash
+cd infrastructure
+docker compose up -d rabbitmq postgres minio pushgateway prometheus
+```
+
+Wait for health checks to pass (postgres and rabbitmq report `healthy`):
+```bash
+docker compose ps
+```
+
+### 4. Create the MinIO bucket
+
+```bash
+docker run --rm --network crucible_default --entrypoint /bin/sh minio/mc:latest \
+  -c "mc alias set local http://minio:9000 minioadmin minioadmin \
+      && mc mb --ignore-existing local/project-crucible-storage"
+```
+
+### Service Endpoints (local)
+
+| Service | URL | Credentials |
+|---|---|---|
+| Control Plane API | http://localhost:8000 | — |
+| RabbitMQ UI | http://localhost:15672 | guest / guest |
+| MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
+| MinIO S3 API | http://localhost:9000 | minioadmin / minioadmin |
+| PostgreSQL | localhost:5432 | postgres / postgres, db: crucible |
+| Prometheus | http://localhost:9090 | — |
+| Pushgateway | http://localhost:9091 | — |
+
+### Optional: Start Doris (e2e testing only)
+
+```bash
+docker compose --profile doris up -d
+```
+
+### Notes
+
+- The `infrastructure/` directory is the Docker Compose root — always run `docker compose` from there.
+- `RUNNER_IP` defaults to `127.0.0.1`; override it if running worker on a different host.
+- MinIO acts as a local S3 replacement; `AWS_ENDPOINT_URL` points services at it.
