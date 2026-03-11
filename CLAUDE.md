@@ -96,14 +96,6 @@ Wait for health checks to pass (postgres and rabbitmq report `healthy`):
 docker compose ps
 ```
 
-### 4. Create the MinIO bucket
-
-```bash
-docker run --rm --network crucible_default --entrypoint /bin/sh minio/mc:latest \
-  -c "mc alias set local http://minio:9000 minioadmin minioadmin \
-      && mc mb --ignore-existing local/project-crucible-storage"
-```
-
 ### Service Endpoints (local)
 
 | Service | URL | Credentials |
