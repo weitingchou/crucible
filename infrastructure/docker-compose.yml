@@ -14,7 +14,6 @@ services:
       CELERY_RESULT_BACKEND: "rpc://"
       S3_BUCKET: "project-crucible-storage"
       AWS_REGION: "us-east-1"
-      # Point boto3 at the local MinIO instance.
       AWS_ENDPOINT_URL: "http://minio:9000"
       AWS_ACCESS_KEY_ID: "minioadmin"
       AWS_SECRET_ACCESS_KEY: "minioadmin"
@@ -39,6 +38,7 @@ services:
       AWS_SECRET_ACCESS_KEY: "minioadmin"
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/crucible"
       PUSHGATEWAY_URL: "http://pushgateway:9091"
+      PROMETHEUS_RW_URL: "http://prometheus:9090/api/v1/write"
       # Resolved at runtime by the container scheduler; override for local dev.
       RUNNER_IP: "${RUNNER_IP:-127.0.0.1}"
     depends_on:
@@ -121,6 +121,9 @@ services:
   # ── Prometheus ────────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
     ports:
       - "9090:9090"
     volumes:
@@ -162,7 +165,7 @@ services:
     entrypoint: >
       bash -c "
         sysctl -w vm.max_map_count=2000000 &&
-        printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/swapon && chmod +x /usr/local/bin/swapon &&
+        ln -sf /bin/true /usr/local/bin/swapon &&
         IP=$$(hostname -i | awk '{print $$1}') &&
         FE_IP=$$(getent hosts doris-fe | awk '{print $$1}') &&
         export FE_SERVERS=\"fe1:$$FE_IP:9010\" &&

@@ -53,7 +53,7 @@ TABLES = [
 
 TESTS_DIR = pathlib.Path(__file__).parent
 WORKLOAD_SRC = TESTS_DIR / "workloads" / "tpch_queries.sql"
-WORKLOAD_S3_KEY = "workloads/tpch_queries.sql"
+WORKLOAD_S3_KEY = "workloads/tpch-queries.sql"
 
 
 def parse_args() -> argparse.Namespace:

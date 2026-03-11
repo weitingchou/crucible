@@ -16,7 +16,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS py-builder
 
 WORKDIR /app
 
-# cassandra-driver and some Taurus deps require a C compiler at build time.
+# cassandra-driver requires a C compiler at build time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libssl-dev libev-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -47,7 +47,7 @@ COPY --from=k6-builder /k6 /usr/local/bin/k6
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
-# The JS driver script path; consumed by the Taurus orchestrator as an env var.
+# The JS driver script path; consumed by the k6 manager as an env var.
 ENV SQL_DRIVER_PATH="/app/worker/src/worker/drivers/generic_sql_driver.js"
 
 CMD ["celery", "-A", "worker.celery_app", "worker", "--loglevel=info"]

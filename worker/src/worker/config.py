@@ -20,6 +20,9 @@ class Settings(BaseSettings):
 
     pushgateway_url: str = "http://localhost:9091"
 
+    # Prometheus remote-write endpoint used by k6's experimental-prometheus-rw output.
+    prometheus_rw_url: str = "http://localhost:9090/api/v1/write"
+
     # Paths to the k6 binary and the generic SQL driver script inside the container.
     k6_binary: str = "/usr/local/bin/k6"
     sql_driver_path: str = "/app/worker/src/worker/drivers/generic_sql_driver.js"

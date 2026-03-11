@@ -7,8 +7,8 @@ app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=[
-        "worker.tasks.master",
-        "worker.tasks.runner",
+        "worker.tasks.dispatcher",
+        "worker.tasks.executor",
     ],
 )
 

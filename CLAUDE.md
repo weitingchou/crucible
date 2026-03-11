@@ -20,8 +20,7 @@ The project is currently in the **design/architecture phase**. The authoritative
 | Metadata Store | PostgreSQL | Test metadata, resource leasing/locking |
 | Execution Worker | Python (Celery) + Docker | Autonomous test lifecycle runner |
 | Load Driver | k6 (Go) + custom `xk6-sql` binary | High-concurrency SQL execution via Goroutines |
-| Orchestrator | Taurus | Process tree lifecycle management for k6 |
-| Telemetry | Prometheus Pushgateway | Push-based real-time metrics aggregation |
+| Telemetry | Prometheus (remote-write) | Real-time metrics streamed directly from k6 |
 
 ### Execution Worker Sub-components
 
@@ -29,7 +28,7 @@ The Celery worker contains four sub-components that run in sequence:
 
 1. **Lease Manager** — Acquires atomic locks on shared SUTs (long-lived) or provisions ephemeral clusters (disposable)
 2. **Fixture Loader** — Hydrates the SUT using one of three strategies (see below)
-3. **Taurus Orchestrator** — Manages k6 process lifecycle: `prepare → startup → execution → shutdown`
+3. **Driver Manager (`driver_manager/k6_manager.py`)** — Spawns and supervises k6 OS processes directly via Python `subprocess`; sends SIGTERM then SIGKILL on teardown
 4. **Generic Workload Driver** — Custom `xk6-sql` binary that parses annotated SQL files and executes randomized queries as concurrent Goroutines
 
 ### Key Design Decisions
@@ -40,8 +39,8 @@ The Celery worker contains four sub-components that run in sequence:
 - **Standard:** Traditional ingestion path
 
 **Scaling uses two modes determined from the YAML `scaling_mode` field:**
-- **Intra-node (vertical):** Single worker spawns multiple local k6 instances
-- **Inter-node (horizontal):** Celery Chain: master task retrieves its IP, then spawns N-1 worker tasks across the fleet
+- **Intra-node (vertical):** `dispatcher_task` fans out a single `k6_executor_task` instructed to spawn N local k6 processes
+- **Inter-node (horizontal):** `dispatcher_task` fans out N `k6_executor_task`s across the fleet; workers check into a PostgreSQL waiting room and start simultaneously on a global START signal
 
 **Asset upload flow for 100GB+ datasets:**
 - Client calls `/fixtures/{id}/{file}/multipart/init` → gets `upload_id`
