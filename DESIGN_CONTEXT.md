@@ -51,9 +51,9 @@
 * **Execution Worker (Celery Node):** Python (Celery) + Docker
     * *Sub-component:* **Lease Manager**
     * *Sub-component:* **Fixture Loader**
-    * *Sub-component:* **Taurus Orchestrator**
+    * *Sub-component:* **Process Manager (Python Subprocess)**
     * *Sub-component:* **Generic Workload Driver (k6)**
-* **Telemetry Gateway:** Prometheus Pushgateway
+* **Telemetry Gateway:** Prometheus (Direct via remote-write)
 * **System Under Test (SUT):** Doris, Trino, Cassandra, etc.
 
 ### 2.2 Component Roles & Responsibilities
@@ -75,10 +75,10 @@
         * Automates hydration of the SUT with massive reference datasets.
         * **Zero-Download (MPP):** Issues SQL commands to pull Parquet files directly from S3.
         * **Streaming (NoSQL):** Streams CSV rows from S3 to Cassandra via async drivers (no local disk I/O).
-    3.  **Taurus Orchestrator:**
-        * Manages the process tree of the underlying driver.
-        * Enforces lifecycle hooks: `prepare` -> `startup` -> `execution` -> `shutdown`.
-        * Monitors worker health (CPU/RAM) and normalizes artifacts.
+    3.  **Process Manager (Native Subprocess):** 
+        * Safely spawns, supervises, and terminates the k6 binary directly using Python's `subprocess` module, bypassing heavy wrappers.
+        * Enforces execution order (`prepare` -> `startup` -> `execution` -> `shutdown`).
+        * Catches cancellation signals, sending `SIGTERM` to allow k6 to flush final SQL queries to Prometheus, and escalates to `SIGKILL` if the process hangs.
     4.  **Generic Workload Driver (k6):**
         * Custom-compiled `xk6-sql` binary.
         * Parses uploaded SQL files on-the-fly and executes them using highly concurrent Goroutines.
@@ -87,55 +87,135 @@
 
 ## 3. Workload Driver Scaling Design (V1)
 
-### 3.1 Distributed Execution Flow
-The API Service determines the execution strategy by parsing the user's YAML:
-* **Intra-Node (Vertical):** A single worker manages multiple local engine instances to maximize CPU utilization.
-* **Inter-Node (Horizontal):** A Celery Chain triggers a "Master" task, retrieves its network identity, and spawns multiple "Worker" tasks across the fleet.
+### 3.1 Scaling Modes
+The system parses `plan.execution.scaling_mode` to determine the execution topology:
 
-### 3.2 Smart Trigger API Implementation
-The `/test-runs/{filename}` API dynamically determines the Celery workflow.
+* Intra-Node (Vertical): Bypasses the distributed waiting room. A single Celery worker downloads the fixtures once, then loops to spawn multiple local k6 `subprocess` instances to maximize local CPU utilization.
+* Inter-Node (Horizontal): Uses a Two-Phase Check-In architecture via PostgreSQL. Multiple Celery workers across the fleet download fixtures independently, enter a "Waiting Room," and wait for a global millisecond-exact `START` signal to prevent staggered execution.
+
+### 3.2 The Dispatcher Task (The Orchestrator)
+This task validates capacity and branches the execution logic based on the scaling mode.
 
 ```python
-BUCKET = "project-crucible-storage"
+import time
+from celery import shared_task
+from celery.app.control import Inspect
+from my_app.database import db_session
+from my_app.tasks import k6_executor_task
 
-@app.post("/test-runs/{filename}")
-async def trigger_test_run(filename: str):
-    plan_content = s3.get_object(Bucket=BUCKET, Key=filename)['Body'].read()
-    plan = yaml.safe_load(plan_content)
-    mode = plan.get("test_environment", {}).get("scaling_mode", "intra_node")
-    
-    if mode == "inter_node":
-        size = plan["test_environment"].get("cluster_size", 2)
-        workflow = chain(
-            run_master_task.s(plan, mode="inter_node"), 
-            run_worker_task.s(plan, count=size-1)
-        )
-        result = workflow.delay()
-        return {"run_id": result.id, "strategy": "distributed_horizontal"}
+@shared_task(bind=True)
+def dispatcher_task(self, plan: dict, run_id: str):
+    mode = plan["execution"].get("scaling_mode", "intra_node")
+    cluster_size = plan["test_environment"]["cluster_spec"]["backend_node"].get("count", 1)
 
-    task = run_master_task.delay(plan, mode="intra_node")
-    return {"run_id": task.id, "strategy": "distributed_vertical"}
+    # ---------------------------------------------------------
+    # BRANCH A: Vertical Scaling (Single Node, Multi-Process)
+    # ---------------------------------------------------------
+    if mode == "intra_node":
+        # Dispatch a single task instructing one worker to spawn N local processes
+        k6_executor_task.delay(plan, run_id, segment_flag="100%", local_instances=cluster_size)
+        return {"status": "intra_node_dispatched"}
+
+    # ---------------------------------------------------------
+    # BRANCH B: Horizontal Scaling (Multi-Node, Two-Phase Check-In)
+    # ---------------------------------------------------------
+    i = Inspect(app=self.app)
+    active_workers = len(i.active_queues() or {})
+    if active_workers < cluster_size:
+        db_session.update_run_status(run_id, "FAILED_INSUFFICIENT_CAPACITY")
+        return {"error": f"Requested {cluster_size} nodes, only {active_workers} available"}
+
+    db_session.init_waiting_room(run_id, target_count=cluster_size)
+
+    segment_size = 100 / cluster_size
+    for idx in range(cluster_size):
+        segment_start, segment_end = int(idx * segment_size), int((idx + 1) * segment_size)
+        segment_flag = f"{segment_start}%:{segment_end}%"
+        k6_executor_task.delay(plan, run_id, segment_flag, local_instances=1)
+
+    # Monitor Waiting Room (5-minute timeout)
+    timeout = time.time() + 300
+    while time.time() < timeout:
+        if db_session.get_ready_count(run_id) == cluster_size:
+            db_session.set_start_signal(run_id, "START")
+            return {"status": "inter_node_all_started"}
+        time.sleep(2)
+
+    db_session.set_start_signal(run_id, "ABORT")
+    return {"error": "Worker check-in timeout exceeded"}
 ```
 
-### 3.2 Celery Worker Implementation
-Workers use Taurus overrides to inject master/worker flags.
+### 3.2 The k6 Executor Task (The Worker)
+This task executes on the worker nodes. It handles fixture downloads and spawns the k6 OS process(es). If in distributed mode, it respects the PostgreSQL waiting room. 
 
 ```python
-@celery_app.task(bind=True)
-def run_master_task(self, plan, mode):
-    overrides = {"execution": plan["execution"]}
-    if mode == "intra_node":
-        overrides["execution"][0].update({
-            "master": True,
-            "workers": plan["test_environment"].get("worker_count", 1)
-        })
-    elif mode == "inter_node":
-        overrides["execution"][0].update({
-            "master": True,
-            "expect-workers": plan["test_environment"].get("cluster_size", 1) - 1
-        })
-    execute_taurus(plan, overrides)
-    return {"master_ip": os.getenv("RUNNER_IP")}
+import time
+import subprocess
+import os
+import signal
+from celery import shared_task
+from my_app.database import db_session
+
+@shared_task(bind=True)
+def k6_executor_task(self, plan: dict, run_id: str, segment_flag: str, local_instances: int):
+    mode = plan["execution"].get("scaling_mode", "intra_node")
+
+    # 1. Setup & Fixture Download (Heavy Lifting happens exactly once per node)
+    download_sql_fixtures(plan["execution"]["workload"])
+
+    env_vars = os.environ.copy()
+    env_vars["K6_PROMETHEUS_RW_SERVER_URL"] = "http://prometheus:9090/api/v1/write"
+
+    # 2. Horizontal Synchronization (Only if inter_node)
+    if mode == "inter_node":
+        db_session.increment_ready_worker(run_id)
+        while True:
+            signal_state = db_session.get_start_signal(run_id)
+            if signal_state == "START":
+                break
+            elif signal_state == "ABORT":
+                cleanup_fixtures()
+                return {"status": "aborted_by_dispatcher"}
+            time.sleep(0.5)
+
+    # 3. Execution: Launch the k6 OS Process(es)
+    processes = []
+    # If intra_node, local_instances > 1. If inter_node, local_instances == 1.
+    for i in range(local_instances):
+        # Dynamically calculate sub-segments if running multiple local instances
+        local_segment = calculate_local_segment(segment_flag, i, local_instances)
+
+        env_vars["K6_PROMETHEUS_RW_INJECT_TAGS"] = f"run_id={run_id},segment={local_segment}"
+
+        cmd = [
+            "k6", "run", "/worker/drivers/generic_sql_driver.js",
+            "--execution-segment", local_segment,
+            "--out", "experimental-prometheus-rw",
+            "--out", f"csv=/tmp/k6_raw_{run_id}_{i}.csv"
+        ]
+        processes.append(subprocess.Popen(cmd, env=env_vars))
+
+    # 4. Wait & Teardown
+    try:
+        # Wait for all processes to finish holding for the specified duration
+        for p in processes:
+            p.wait(timeout=plan["execution"]["hold_for_seconds"]) 
+    except subprocess.TimeoutExpired:
+        for p in processes:
+            p.send_signal(signal.SIGTERM)
+        try:
+            for p in processes:
+                p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            for p in processes:
+                p.kill()
+
+    # Upload all raw artifacts and clean disk
+    for i in range(local_instances):
+        upload_to_s3(f"/tmp/k6_raw_{run_id}_{i}.csv")
+    cleanup_fixtures()
+
+    return {"status": "completed", "mode": mode, "instances_run": local_instances}
 ```
 
 ## 4. Fixture Loader Design (V1)
@@ -238,6 +318,10 @@ function parseAnnotatedSql(sqlText) {
     // ...
 }
 ```
+### 5.3 Direct k6 Execution & Telemetry
+By bypassing Taurus and running k6 directly via the OS, we ensure that the custom SQL metrics generated by the script (`sql_duration_QueryName`) are perfectly preserved.
+* Real-time Metrics: The worker executes k6 with the `--out experimental-prometheus-rw` flag, streaming the custom `Trend` metrics directly into Prometheus.
+* Artifact Archival: The worker also uses `--out csv=/tmp/k6_raw.csv` to generate a raw backup of every data point, which the Celery worker uploads directly to the S3 artifact bucket during the teardown phase.
 
 ## 6. Test Plan YAML Specification (V1 Locked)
 
