@@ -27,3 +27,6 @@ tests/fixtures/
 # Taurus / bzt temp files
 .bzt/
 bzt.log
+
+# Claude Code
+.claude/
