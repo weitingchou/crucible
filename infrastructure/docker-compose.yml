@@ -37,7 +37,6 @@ services:
       AWS_ACCESS_KEY_ID: "minioadmin"
       AWS_SECRET_ACCESS_KEY: "minioadmin"
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/crucible"
-      PUSHGATEWAY_URL: "http://pushgateway:9091"
       PROMETHEUS_RW_URL: "http://prometheus:9090/api/v1/write"
       # Resolved at runtime by the container scheduler; override for local dev.
       RUNNER_IP: "${RUNNER_IP:-127.0.0.1}"
@@ -48,8 +47,6 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-      pushgateway:
-        condition: service_started
 
   # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
@@ -76,6 +73,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -111,12 +109,6 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-
-  # ── Prometheus Pushgateway ────────────────────────────────────────────────────
-  pushgateway:
-    image: prom/pushgateway:latest
-    ports:
-      - "9091:9091"
 
   # ── Prometheus ────────────────────────────────────────────────────────────────
   prometheus:

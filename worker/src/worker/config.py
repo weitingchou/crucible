@@ -18,8 +18,6 @@ class Settings(BaseSettings):
     # Injected by the container scheduler so master tasks can advertise their IP.
     runner_ip: str = "127.0.0.1"
 
-    pushgateway_url: str = "http://localhost:9091"
-
     # Prometheus remote-write endpoint used by k6's experimental-prometheus-rw output.
     prometheus_rw_url: str = "http://localhost:9090/api/v1/write"
 
