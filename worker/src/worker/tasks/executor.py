@@ -50,6 +50,7 @@ def k6_executor_task(
                 run_id,
                 local_segment,
                 i,
+                plan,
                 extra_env={"DOWNLOADED_SQL_PATH": sql_paths[0] if sql_paths else ""},
             )
         )
@@ -83,10 +84,9 @@ def _download_sql_fixtures(workloads: list[dict]) -> list[str]:
     paths = []
     for w in workloads:
         workload_id = w["workload_id"]
+        s3_key = f"workloads/{workload_id.replace('-', '_')}.sql"
         local_path = f"/tmp/{workload_id}.sql"
-        s3.download_file(
-            settings.s3_bucket, f"workloads/{workload_id}.sql", local_path
-        )
+        s3.download_file(settings.s3_bucket, s3_key, local_path)
         paths.append(local_path)
     return paths
 
