@@ -1,0 +1,18 @@
+{{- if .Values.prometheus.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crucible.fullname" . }}-prometheus-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    # k6 pushes metrics via remote-write; no scrape targets needed for the load driver.
+    # Add scrape targets here if you expose /metrics from control-plane or worker.
+    scrape_configs: []
+{{- end }}

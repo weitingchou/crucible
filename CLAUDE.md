@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## AWS CLI
+
+Always use `--profile claude-bot` with all `aws` CLI commands.
+
 ## Project Overview
 
 **Crucible** is a Data-Testing-as-a-Service (DTaaS) platform for load testing massive datasets (100GB+) against distributed database systems (Doris, Trino, Cassandra, etc.). Users define tests entirely through YAML configs and SQL files — no custom code required.

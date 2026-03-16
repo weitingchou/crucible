@@ -1,0 +1,56 @@
+{{- if .Values.minio.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crucible.fullname" . }}-minio-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+  annotations:
+    # Re-run this job on every helm upgrade to ensure the bucket exists.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "crucible.labels" . | nindent 8 }}
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait until MinIO is ready before creating the bucket.
+        - name: wait-for-minio
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -q -O- http://{{ include "crucible.fullname" . }}-minio:{{ .Values.minio.service.s3Port }}/minio/health/ready; do
+                echo "waiting for minio..."; sleep 3;
+              done
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: s3-access-key-id
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: s3-secret-access-key
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set local \
+                http://{{ include "crucible.fullname" . }}-minio:{{ .Values.minio.service.s3Port }} \
+                $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD && \
+              mc mb --ignore-existing local/{{ .Values.minio.defaultBucket }}
+{{- end }}

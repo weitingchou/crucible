@@ -1,0 +1,13 @@
+apiVersion: v2
+name: crucible
+description: Data-Testing-as-a-Service (DTaaS) platform for load testing massive datasets against distributed database systems
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - load-testing
+  - dtaas
+  - k6
+  - celery
+maintainers:
+  - name: crucible

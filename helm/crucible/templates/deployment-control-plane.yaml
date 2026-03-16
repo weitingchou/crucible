@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crucible.fullname" . }}-control-plane
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+    {{- include "crucible.selectorLabels" (dict "root" . "component" "control-plane") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "crucible.selectorLabels" (dict "root" . "component" "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crucible.labels" . | nindent 8 }}
+        {{- include "crucible.selectorLabels" (dict "root" . "component" "control-plane") | nindent 8 }}
+    spec:
+      containers:
+        - name: control-plane
+          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.controlPlane.image) }}
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            - name: CELERY_BROKER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: celery-broker-url
+            - name: CELERY_RESULT_BACKEND
+              value: "rpc://"
+            - name: S3_BUCKET
+              value: {{ if .Values.minio.enabled }}{{ .Values.minio.defaultBucket | quote }}{{ else }}{{ .Values.s3.bucket | quote }}{{ end }}
+            - name: AWS_REGION
+              value: {{ .Values.s3.region | quote }}
+            - name: AWS_ENDPOINT_URL
+              value: {{ include "crucible.s3EndpointUrl" . | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: s3-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: s3-secret-access-key
+          {{- with .Values.controlPlane.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,170 @@
+# Default values for crucible.
+# Override these in a separate values file (e.g. values-prod.yaml) for each environment.
+
+# -- Global image registry prefix.  Set to your ECR base URL, e.g.
+#    123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+imageRegistry: ""
+
+# ── Control Plane ────────────────────────────────────────────────────────────
+controlPlane:
+  image:
+    repository: crucible/control-plane
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  # Set type: LoadBalancer or configure ingress below to expose externally.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: crucible.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources: {}
+  #   requests:
+  #     cpu: 250m
+  #     memory: 256Mi
+  #   limits:
+  #     cpu: 500m
+  #     memory: 512Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── Worker ───────────────────────────────────────────────────────────────────
+worker:
+  image:
+    repository: crucible/worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  resources: {}
+  #   requests:
+  #     cpu: 500m
+  #     memory: 512Mi
+  #   limits:
+  #     cpu: 2
+  #     memory: 2Gi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── RabbitMQ ─────────────────────────────────────────────────────────────────
+rabbitmq:
+  enabled: true
+  image:
+    repository: rabbitmq
+    tag: "3.13-management"
+    pullPolicy: IfNotPresent
+
+  auth:
+    username: guest
+    # Stored in Secret; override with a strong password in production.
+    password: guest
+
+  persistence:
+    enabled: true
+    storageClass: ""   # "" uses the cluster default StorageClass (gp2/gp3 on EKS)
+    size: 8Gi
+
+  service:
+    amqpPort: 5672
+    managementPort: 15672
+
+  resources: {}
+
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+  auth:
+    username: postgres
+    # Stored in Secret; override with a strong password in production.
+    password: postgres
+    database: crucible
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+
+  service:
+    port: 5432
+
+  resources: {}
+
+# ── MinIO ─────────────────────────────────────────────────────────────────────
+# Set enabled: false and populate the s3 block below to use AWS S3 instead.
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  auth:
+    rootUser: minioadmin
+    # Stored in Secret; override with a strong password in production.
+    rootPassword: minioadmin
+
+  defaultBucket: project-crucible-storage
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 50Gi
+
+  service:
+    s3Port: 9000
+    consolePort: 9001
+
+  resources: {}
+
+# ── External S3 ──────────────────────────────────────────────────────────────
+# Used when minio.enabled is false.  Leave endpointUrl empty for AWS S3.
+s3:
+  bucket: project-crucible-storage
+  region: us-east-1
+  endpointUrl: ""
+  accessKeyId: ""
+  secretAccessKey: ""
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 20Gi
+
+  service:
+    port: 9090
+
+  resources: {}
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

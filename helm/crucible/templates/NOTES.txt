@@ -1,0 +1,38 @@
+Crucible has been deployed to namespace {{ .Release.Namespace }}.
+
+── Control Plane ──────────────────────────────────────────────────────────────
+  Service: {{ include "crucible.fullname" . }}-control-plane:{{ .Values.controlPlane.service.port }}
+
+{{- if .Values.controlPlane.ingress.enabled }}
+  Ingress hosts:
+  {{- range .Values.controlPlane.ingress.hosts }}
+    http{{ if $.Values.controlPlane.ingress.tls }}s{{ end }}://{{ .host }}
+  {{- end }}
+{{- else if eq .Values.controlPlane.service.type "LoadBalancer" }}
+  Run the following to get the external address (may take a minute):
+    kubectl get svc -n {{ .Release.Namespace }} {{ include "crucible.fullname" . }}-control-plane
+{{- else }}
+  Forward port locally with:
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crucible.fullname" . }}-control-plane 8000:{{ .Values.controlPlane.service.port }}
+  Then open: http://localhost:8000/docs
+{{- end }}
+
+── Worker ─────────────────────────────────────────────────────────────────────
+  Replicas: {{ .Values.worker.replicaCount }}
+
+── Infrastructure ─────────────────────────────────────────────────────────────
+{{- if .Values.rabbitmq.enabled }}
+  RabbitMQ Management UI:
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crucible.fullname" . }}-rabbitmq 15672:{{ .Values.rabbitmq.service.managementPort }}
+    Open: http://localhost:15672  ({{ .Values.rabbitmq.auth.username }} / <rabbitmq-password from secret>)
+{{- end }}
+{{- if .Values.minio.enabled }}
+  MinIO Console:
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crucible.fullname" . }}-minio 9001:{{ .Values.minio.service.consolePort }}
+    Open: http://localhost:9001
+{{- end }}
+{{- if .Values.prometheus.enabled }}
+  Prometheus:
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crucible.fullname" . }}-prometheus 9090:{{ .Values.prometheus.service.port }}
+    Open: http://localhost:9090
+{{- end }}
