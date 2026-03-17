@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: rabbitmq
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.rabbitmq.image) }}
+          image: {{ include "crucible.image" (dict "registry" "" "image" .Values.rabbitmq.image) }}
           imagePullPolicy: {{ .Values.rabbitmq.image.pullPolicy }}
           ports:
             - name: amqp
@@ -36,8 +36,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "crucible.secretName" . }}
                   key: rabbitmq-password
-            - name: RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS
-              value: "-rabbitmq_management load_definitions \"/etc/rabbitmq/definitions.json\""
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "ping"]
@@ -52,10 +50,6 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
           volumeMounts:
-            - name: config
-              mountPath: /etc/rabbitmq/definitions.json
-              subPath: definitions.json
-              readOnly: true
             {{- if .Values.rabbitmq.persistence.enabled }}
             - name: data
               mountPath: /var/lib/rabbitmq
@@ -64,10 +58,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      volumes:
-        - name: config
-          configMap:
-            name: {{ include "crucible.fullname" . }}-rabbitmq-config
   {{- if .Values.rabbitmq.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:

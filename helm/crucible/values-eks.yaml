@@ -1,0 +1,68 @@
+# EKS deployment overrides for Crucible.
+# Usage:
+#   helm install crucible ./helm/crucible \
+#     -f helm/crucible/values-eks.yaml \
+#     --set s3.bucket=<your-bucket> \
+#     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<your-iam-role-arn>
+
+# ── S3 (AWS) ──────────────────────────────────────────────────────────────────
+# MinIO is disabled in favour of the pre-created AWS S3 bucket.
+minio:
+  enabled: false
+
+s3:
+  bucket: ""                 # Your S3 bucket name, e.g. "my-crucible-storage"
+  region: ap-southeast-1
+  endpointUrl: ""            # Leave empty for AWS S3
+  accessKeyId: ""            # Leave empty when using IRSA (recommended)
+  secretAccessKey: ""        # Leave empty when using IRSA (recommended)
+
+# ── AWS Account ───────────────────────────────────────────────────────────────
+# Setting awsAccountId auto-builds both the ECR imageRegistry URL and the IRSA
+# role ARN — no need to set them separately.
+#   helm install crucible ./helm/crucible -f values-eks.yaml --set awsAccountId=123456789012
+awsAccountId: ""
+
+# ── IRSA (IAM Roles for Service Accounts) ────────────────────────────────────
+# The ServiceAccount is annotated with the IRSA role ARN (auto-built from
+# awsAccountId + irsaRoleName) so pods can access S3 without static credentials.
+serviceAccount:
+  create: true
+  irsaRoleName: "Crucible-S3-Role"
+
+# ── Control Plane ─────────────────────────────────────────────────────────────
+controlPlane:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── Worker ────────────────────────────────────────────────────────────────────
+worker:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 2Gi
+
+# ── RabbitMQ ──────────────────────────────────────────────────────────────────
+rabbitmq:
+  auth:
+    password: ""             # Set a strong password
+
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+postgresql:
+  auth:
+    password: ""             # Set a strong password
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+prometheus:
+  persistence:
+    storageClass: gp2        # EKS default StorageClass

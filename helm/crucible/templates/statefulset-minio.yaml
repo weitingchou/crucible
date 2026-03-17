@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: minio
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.minio.image) }}
+          image: {{ include "crucible.image" (dict "registry" "" "image" .Values.minio.image) }}
           imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
           command: ["server", "/data", "--console-address", ":9001"]
           ports:

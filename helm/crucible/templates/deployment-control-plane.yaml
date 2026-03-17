@@ -17,9 +17,10 @@ spec:
         {{- include "crucible.labels" . | nindent 8 }}
         {{- include "crucible.selectorLabels" (dict "root" . "component" "control-plane") | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "crucible.serviceAccountName" . }}
       containers:
         - name: control-plane
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.controlPlane.image) }}
+          image: {{ include "crucible.image" (dict "registry" (include "crucible.imageRegistry" .) "image" .Values.controlPlane.image) }}
           imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
           ports:
             - name: http
@@ -51,6 +52,7 @@ spec:
               value: {{ .Values.s3.region | quote }}
             - name: AWS_ENDPOINT_URL
               value: {{ include "crucible.s3EndpointUrl" . | quote }}
+            {{- if or .Values.minio.enabled .Values.s3.accessKeyId }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -61,6 +63,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "crucible.secretName" . }}
                   key: s3-secret-access-key
+            {{- end }}
           {{- with .Values.controlPlane.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

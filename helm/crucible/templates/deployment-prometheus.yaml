@@ -22,7 +22,7 @@ spec:
         fsGroup: 65534   # nobody — required for Prometheus to write to the PVC
       containers:
         - name: prometheus
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.prometheus.image) }}
+          image: {{ include "crucible.image" (dict "registry" "" "image" .Values.prometheus.image) }}
           imagePullPolicy: {{ .Values.prometheus.image.pullPolicy }}
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"

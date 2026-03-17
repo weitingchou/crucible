@@ -43,6 +43,27 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{/*
+Effective ECR / image registry URL.
+Uses imageRegistry if explicitly set; otherwise auto-builds from awsAccountId + s3.region.
+*/}}
+{{- define "crucible.imageRegistry" -}}
+{{- if .Values.imageRegistry -}}
+{{- .Values.imageRegistry -}}
+{{- else if .Values.awsAccountId -}}
+{{- printf "%s.dkr.ecr.%s.amazonaws.com" .Values.awsAccountId .Values.s3.region -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+IRSA role ARN built from awsAccountId + serviceAccount.irsaRoleName.
+*/}}
+{{- define "crucible.irsaRoleArn" -}}
+{{- if and .Values.awsAccountId .Values.serviceAccount.irsaRoleName -}}
+{{- printf "arn:aws:iam::%s:role/%s" .Values.awsAccountId .Values.serviceAccount.irsaRoleName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Build a full image reference respecting the global registry override.
 Usage: include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.controlPlane.image)
 */}}
@@ -83,10 +104,23 @@ MinIO / S3 endpoint URL (internal cluster URL when MinIO is enabled).
 */}}
 {{- define "crucible.s3EndpointUrl" -}}
 {{- if .Values.minio.enabled -}}
-{{- printf "http://%s-minio:%d" (include "crucible.fullname" .) (.Values.minio.service.s3Port | int) }}
+{{- if .Values.minio.endpointUrl -}}
+{{- .Values.minio.endpointUrl }}
 {{- else -}}
-{{- .Values.s3.endpointUrl }}
+{{- printf "http://%s-minio:%d" (include "crucible.fullname" .) (.Values.minio.service.s3Port | int) }}
 {{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+ServiceAccount name used by control-plane and worker pods.
+*/}}
+{{- define "crucible.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "crucible.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
 {{- end }}
 
 {{/*

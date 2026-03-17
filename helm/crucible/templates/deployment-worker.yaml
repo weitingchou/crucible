@@ -17,9 +17,10 @@ spec:
         {{- include "crucible.labels" . | nindent 8 }}
         {{- include "crucible.selectorLabels" (dict "root" . "component" "worker") | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "crucible.serviceAccountName" . }}
       containers:
         - name: worker
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.worker.image) }}
+          image: {{ include "crucible.image" (dict "registry" (include "crucible.imageRegistry" .) "image" .Values.worker.image) }}
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           env:
             - name: CELERY_BROKER_URL
@@ -35,6 +36,7 @@ spec:
               value: {{ .Values.s3.region | quote }}
             - name: AWS_ENDPOINT_URL
               value: {{ include "crucible.s3EndpointUrl" . | quote }}
+            {{- if or .Values.minio.enabled .Values.s3.accessKeyId }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -45,6 +47,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "crucible.secretName" . }}
                   key: s3-secret-access-key
+            {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

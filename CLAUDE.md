@@ -122,3 +122,8 @@ docker compose --profile doris up -d
 - The `infrastructure/` directory is the Docker Compose root — always run `docker compose` from there.
 - `RUNNER_IP` defaults to `127.0.0.1`; override it if running worker on a different host.
 - MinIO acts as a local S3 replacement; `AWS_ENDPOINT_URL` points services at it.
+
+## Kubernetes / EKS
+
+- EKS cluster: `richard-claude-playground` (ap-southeast-1)
+- Always deploy to the `crucible` namespace.

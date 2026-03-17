@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: postgresql
-          image: {{ include "crucible.image" (dict "registry" .Values.imageRegistry "image" .Values.postgresql.image) }}
+          image: {{ include "crucible.image" (dict "registry" "" "image" .Values.postgresql.image) }}
           imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
           ports:
             - name: postgres
@@ -36,6 +36,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "crucible.secretName" . }}
                   key: postgres-password
+            # EBS volumes have a lost+found dir at the mount root; PGDATA must
+            # point to a subdirectory to avoid the "not empty" initdb error.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", {{ .Values.postgresql.auth.username | quote }}]

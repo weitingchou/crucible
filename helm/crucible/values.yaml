@@ -1,9 +1,25 @@
 # Default values for crucible.
 # Override these in a separate values file (e.g. values-prod.yaml) for each environment.
 
-# -- Global image registry prefix.  Set to your ECR base URL, e.g.
-#    123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+# -- Your AWS account ID.  Used to auto-build the ECR image registry URL and
+#    the IRSA role ARN.  Pass at install time:
+#      helm install crucible ./helm/crucible --set awsAccountId=123456789012
+awsAccountId: ""
+
+# -- Global image registry prefix.  Leave empty to auto-build from awsAccountId
+#    (e.g. <awsAccountId>.dkr.ecr.<region>.amazonaws.com).
+#    Set explicitly to override (e.g. for a non-ECR registry).
 imageRegistry: ""
+
+# ── Service Account ───────────────────────────────────────────────────────────
+# On EKS, annotate with eks.amazonaws.com/role-arn to use IRSA instead of
+# static AWS credentials.  Leave accessKeyId/secretAccessKey empty when IRSA
+# is in use — the AWS SDK will automatically pick up the projected token.
+serviceAccount:
+  create: true
+  name: "crucible-service-account"
+  # IRSA role name (without ARN prefix). The full ARN is auto-built from awsAccountId.
+  irsaRoleName: "Crucible-S3-Role"
 
 # ── Control Plane ────────────────────────────────────────────────────────────
 controlPlane:
@@ -78,7 +94,7 @@ rabbitmq:
 
   persistence:
     enabled: true
-    storageClass: ""   # "" uses the cluster default StorageClass (gp2/gp3 on EKS)
+    storageClass: "gp3"
     size: 8Gi
 
   service:
@@ -103,7 +119,7 @@ postgresql:
 
   persistence:
     enabled: true
-    storageClass: ""
+    storageClass: "gp3"
     size: 10Gi
 
   service:
@@ -112,9 +128,11 @@ postgresql:
   resources: {}
 
 # ── MinIO ─────────────────────────────────────────────────────────────────────
-# Set enabled: false and populate the s3 block below to use AWS S3 instead.
+# Set enabled: true to deploy MinIO as an in-cluster S3-compatible store.
+# When enabled, endpointUrl overrides the S3 endpoint so services point at
+# MinIO instead of AWS.  Leave endpointUrl empty to auto-build from service name.
 minio:
-  enabled: true
+  enabled: false
   image:
     repository: minio/minio
     tag: latest
@@ -127,9 +145,14 @@ minio:
 
   defaultBucket: project-crucible-storage
 
+  # Custom endpoint URL for MinIO. Leave empty to auto-resolve from the
+  # in-cluster service name (recommended). Only set this if you need to
+  # override the auto-generated URL (e.g. for external MinIO instances).
+  endpointUrl: ""
+
   persistence:
     enabled: true
-    storageClass: ""
+    storageClass: "gp3"
     size: 50Gi
 
   service:
@@ -138,14 +161,15 @@ minio:
 
   resources: {}
 
-# ── External S3 ──────────────────────────────────────────────────────────────
-# Used when minio.enabled is false.  Leave endpointUrl empty for AWS S3.
+# ── AWS S3 ────────────────────────────────────────────────────────────────────
+# Used when minio.enabled is false.
+# Leave accessKeyId/secretAccessKey empty when using IRSA on EKS — the AWS SDK
+# will automatically pick up credentials from the pod's projected service account token.
 s3:
-  bucket: project-crucible-storage
-  region: us-east-1
-  endpointUrl: ""
-  accessKeyId: ""
-  secretAccessKey: ""
+  bucket: "claude-bot-workspace-project-crucible-storage"  # Required: your S3 bucket name
+  region: ap-southeast-1   # AWS region where the bucket resides
+  accessKeyId: ""          # Leave empty when using IRSA
+  secretAccessKey: ""      # Leave empty when using IRSA
 
 # ── Prometheus ────────────────────────────────────────────────────────────────
 prometheus:
@@ -157,7 +181,7 @@ prometheus:
 
   persistence:
     enabled: true
-    storageClass: ""
+    storageClass: "gp3"
     size: 20Gi
 
   service:
