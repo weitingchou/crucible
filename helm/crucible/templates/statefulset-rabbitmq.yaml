@@ -19,6 +19,13 @@ spec:
         {{- include "crucible.labels" . | nindent 8 }}
         {{- include "crucible.selectorLabels" (dict "root" . "component" "rabbitmq") | nindent 8 }}
     spec:
+      volumes:
+        - name: definitions
+          secret:
+            secretName: {{ include "crucible.secretName" . }}
+            items:
+              - key: rabbitmq-definitions.json
+                path: rabbitmq-definitions.json
       containers:
         - name: rabbitmq
           image: {{ include "crucible.image" (dict "registry" "" "image" .Values.rabbitmq.image) }}
@@ -36,6 +43,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "crucible.secretName" . }}
                   key: rabbitmq-password
+            - name: RABBITMQ_DEFAULT_DEFINITIONS_FILE
+              value: /etc/rabbitmq/definitions/rabbitmq-definitions.json
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "ping"]
@@ -54,6 +63,9 @@ spec:
             - name: data
               mountPath: /var/lib/rabbitmq
             {{- end }}
+            - name: definitions
+              mountPath: /etc/rabbitmq/definitions
+              readOnly: true
           {{- with .Values.rabbitmq.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

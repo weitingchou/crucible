@@ -127,3 +127,27 @@ docker compose --profile doris up -d
 
 - EKS cluster: `richard-claude-playground` (ap-southeast-1)
 - Always deploy to the `crucible` namespace.
+### Helm Deploy Procedure
+
+```bash
+# 1. Update kubeconfig (written to ~/.kube/claude-config)
+aws eks update-kubeconfig --name richard-claude-playground --profile claude-bot
+
+# 2. Create namespace only if it does not already exist
+kubectl get namespace crucible --kubeconfig ~/.kube/claude-config 2>/dev/null \
+  || kubectl create namespace crucible --kubeconfig ~/.kube/claude-config
+
+# 3. Get AWS account ID and install
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --profile claude-bot)
+helm install crucible ./helm/crucible \
+  -f helm/crucible/values-eks.yaml \
+  --set awsAccountId=$AWS_ACCOUNT_ID \
+  --set rabbitmq.auth.password=<strong-password> \
+  --set postgresql.auth.password=<strong-password> \
+  --namespace crucible \
+  --kubeconfig ~/.kube/claude-config
+```
+
+**Always pass explicit passwords** for RabbitMQ and PostgreSQL via `--set` — `values-eks.yaml` leaves them empty.
+
+RabbitMQ's `RABBITMQ_DEFAULT_PASS` only applies on first initialization; the chart uses a definitions file (`RABBITMQ_DEFAULT_DEFINITIONS_FILE`) mounted from the Secret so the password is synced on every pod start, including after `helm upgrade`.
