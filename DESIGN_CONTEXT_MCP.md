@@ -2,35 +2,35 @@
 The Crucible MCP Server acts as a semantic orchestration layer for the Data-Testing-as-a-Service platform. It translates natural language intent into structured calls to the Crucible Control Plane REST API. It must support both stdio (for local CLI debugging via Claude Code) and SSE (for cloud-native production access).
 
 2. Technical Stack
-• Framework: Python with FastMCP (high-level, ergonomic wrapper).
-• Integration: Thin wrapper over the existing FastAPI Control Plane.
-• Transport: Dual-mode (stdio/SSE).
-• Security: Bearer Token authentication for SSE connections.
+- Framework: Python with FastMCP (high-level, ergonomic wrapper).
+- Integration: Thin wrapper over the existing FastAPI Control Plane.
+- Transport: Dual-mode (stdio/SSE).
+- Security: Bearer Token authentication for SSE connections.
 
 3. Tool Definitions (Capabilities)
 Claude should implement the following tools within the MCP server:
-• list_supported_suts: Returns a list of supported System Under Test types (Doris, Trino, Cassandra).
-• get_db_inventory: Lists currently available/leased database instances from the Metadata Store.
-• validate_test_plan: Validates a YAML string against the V1 Locked Schema.
-• submit_test_run: Submits the plan to the Dispatcher. Returns a run_id.
-• monitor_test_progress: Returns real-time status: "Waiting Room," "Executing," or "Completed."
-• emergency_stop: Triggers the SIGTERM -> SIGKILL escalation flow to kill worker processes.
+- list_supported_suts: Returns a list of supported System Under Test types (Doris, Trino, Cassandra).
+- get_db_inventory: Lists currently available/leased database instances from the Metadata Store.
+- validate_test_plan: Validates a YAML string against the V1 Locked Schema.
+- submit_test_run: Submits the plan to the Dispatcher. Returns a run_id.
+- monitor_test_progress: Returns real-time status: "Waiting Room," "Executing," or "Completed."
+- emergency_stop: Triggers the SIGTERM -> SIGKILL escalation flow to kill worker processes.
 
 4. Resource Definitions (Context)
 Resources allow Claude to "read" the state of Crucible:
-• crucible://fixtures/registry: Metadata about uploaded datasets in S3/MinIO (size, format, target tables).
-• crucible://telemetry/recent-stats: A summary of the last 5 test runs to provide context for baseline comparisons.
-• crucible://logs/{run_id}: Streaming logs from the Celery workers during execution.
+- crucible://fixtures/registry: Metadata about uploaded datasets in S3/MinIO (size, format, target tables).
+- crucible://telemetry/recent-stats: A summary of the last 5 test runs to provide context for baseline comparisons.
+- crucible://logs/{run_id}: Streaming logs from the Celery workers during execution.
 
 5. Implementation Requirements
-• Async First: All network calls to the Control Plane or Metadata DB must be non-blocking.
-• Progress Notifications: Use MCP's notify/progress feature for long-running upload_fixture or waiting_room phases so the client doesn't time out.
-• Error Mapping: Map FAILED_INSUFFICIENT_CAPACITY to a "ResourceExhausted" MCP error. Map YAML validation errors to a structured "InvalidParams" error with line numbers.
-• Environment Injection: Automatically inject K6_PROMETHEUS_RW_SERVER_URL into test plans if missing.
+- Async First: All network calls to the Control Plane or Metadata DB must be non-blocking.
+- Progress Notifications: Use MCP's notify/progress feature for long-running upload_fixture or waiting_room phases so the client doesn't time out.
+- Error Mapping: Map FAILED_INSUFFICIENT_CAPACITY to a "ResourceExhausted" MCP error. Map YAML validation errors to a structured "InvalidParams" error with line numbers.
+- Environment Injection: Automatically inject K6_PROMETHEUS_RW_SERVER_URL into test plans if missing.
 
 6. Deployment Strategy
-• Local: Executable via python server.py for use with the MCP Inspector.
-• K8s/EKS: A dedicated deployment in the Crucible namespace, exposed via a LoadBalancer/Ingress with Nginx buffering disabled (proxy_buffering off;) to support SSE streaming.
+- Local: Executable via python server.py for use with the MCP Inspector.
+- K8s/EKS: A dedicated deployment in the Crucible namespace, exposed via a LoadBalancer/Ingress with Nginx buffering disabled (proxy_buffering off;) to support SSE streaming.
 
 7. Starter Implementation (Python/FastMCP)
 ```python
