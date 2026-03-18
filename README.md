@@ -2,6 +2,30 @@
 
 **Data-Testing-as-a-Service (DTaaS)** platform for load testing massive datasets (100GB+) against distributed database systems (Doris, Trino, Cassandra, etc.). Users define tests entirely through YAML configs and SQL files — no custom code required.
 
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Repository Structure](#repository-structure)
+- [1. Building the Project](#1-building-the-project)
+  - [Prerequisites](#prerequisites)
+  - [Install Python dependencies](#install-python-dependencies)
+  - [Build Docker images](#build-docker-images)
+- [2. Running the Project](#2-running-the-project)
+  - [Start all services with Docker Compose](#start-all-services-with-docker-compose)
+  - [Verify the stack is healthy](#verify-the-stack-is-healthy)
+  - [Quick start: run a test](#quick-start-run-a-test)
+  - [SQL workload file format](#sql-workload-file-format)
+  - [Environment variables](#environment-variables)
+- [3. MCP Server (AI Agent Interface)](#3-mcp-server-ai-agent-interface)
+  - [Tools](#tools)
+  - [Resources](#resources)
+  - [Run locally (stdio mode)](#run-locally-stdio-mode)
+  - [Run as SSE server](#run-as-sse-server)
+  - [Connect from Claude Desktop](#connect-from-claude-desktop)
+  - [Configuration](#configuration)
+- [4. Testing the Project](#4-testing-the-project)
+- [5. End-to-End Testing with Apache Doris](#5-end-to-end-testing-with-apache-doris)
+
 ## Architecture Overview
 
 ```
