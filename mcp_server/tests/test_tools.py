@@ -1,0 +1,272 @@
+"""Tests for crucible_mcp.tools — all 6 MCP tools."""
+
+import pytest
+import yaml
+from unittest.mock import AsyncMock, patch
+
+from mcp.server.fastmcp import FastMCP
+
+from crucible_mcp.errors import CrucibleError
+from crucible_mcp.tools import register_tools
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+_VALID_PLAN = {
+    "test_metadata": {"run_label": "smoke-test"},
+    "test_environment": {
+        "env_type": "long-lived",
+        "target_db": "tpch",
+        "component_spec": {
+            "type": "doris",
+            "cluster_info": {"host": "doris-fe:9030", "username": "root", "password": ""},
+        },
+        "fixtures": [],
+    },
+    "execution": {
+        "executor": "k6",
+        "scaling_mode": "intra_node",
+        "concurrency": 10,
+        "ramp_up": "30s",
+        "hold_for": "2m",
+        "workload": [],
+    },
+}
+
+_VALID_PLAN_YAML = yaml.dump(_VALID_PLAN)
+
+
+@pytest.fixture
+def mcp_app():
+    """Create a FastMCP instance with tools registered."""
+    app = FastMCP("test")
+    register_tools(app)
+    return app
+
+
+def _get_tool(mcp_app: FastMCP, name: str):
+    """Retrieve a registered tool function by name."""
+    for tool in mcp_app._tool_manager._tools.values():
+        if tool.name == name:
+            return tool.fn
+    raise KeyError(f"Tool {name!r} not found")
+
+
+# ---------------------------------------------------------------------------
+# list_supported_suts
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_supported_suts(mcp_app):
+    fn = _get_tool(mcp_app, "list_supported_suts")
+    with patch("crucible_mcp.tools.client.list_sut_types", new_callable=AsyncMock) as mock:
+        mock.return_value = ["doris", "trino", "cassandra"]
+        result = await fn()
+    assert result == ["doris", "trino", "cassandra"]
+    mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# get_db_inventory
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_db_inventory(mcp_app):
+    fn = _get_tool(mcp_app, "get_db_inventory")
+    with patch("crucible_mcp.tools.client.get_sut_inventory", new_callable=AsyncMock) as mock:
+        mock.return_value = {"active": [{"run_id": "r1", "sut_type": "doris", "status": "EXECUTING"}]}
+        result = await fn()
+    assert result["active"][0]["sut_type"] == "doris"
+
+
+# ---------------------------------------------------------------------------
+# validate_test_plan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_validate_valid_plan(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    result = await fn(_VALID_PLAN_YAML)
+    assert result == {"valid": True}
+
+
+@pytest.mark.asyncio
+async def test_validate_invalid_yaml(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    result = await fn("{{not: valid: yaml:")
+    assert result["valid"] is False
+    assert result["errors"][0]["path"] == "<yaml>"
+
+
+@pytest.mark.asyncio
+async def test_validate_missing_required_field(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    # Missing test_metadata
+    plan = {
+        "test_environment": _VALID_PLAN["test_environment"],
+        "execution": _VALID_PLAN["execution"],
+    }
+    result = await fn(yaml.dump(plan))
+    assert result["valid"] is False
+    assert any("test_metadata" in e["path"] for e in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_validate_bad_concurrency(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    plan = {**_VALID_PLAN, "execution": {**_VALID_PLAN["execution"], "concurrency": 0}}
+    result = await fn(yaml.dump(plan))
+    assert result["valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_validate_invalid_scaling_mode(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    plan = {**_VALID_PLAN, "execution": {**_VALID_PLAN["execution"], "scaling_mode": "invalid"}}
+    result = await fn(yaml.dump(plan))
+    assert result["valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_validate_mutually_exclusive_cluster_fields(mcp_app):
+    fn = _get_tool(mcp_app, "validate_test_plan")
+    plan = {
+        **_VALID_PLAN,
+        "test_environment": {
+            **_VALID_PLAN["test_environment"],
+            "component_spec": {
+                "type": "doris",
+                "cluster_info": {"host": "h", "username": "u", "password": "p"},
+                "cluster_spec": {"version": "2.0"},
+            },
+        },
+    }
+    result = await fn(yaml.dump(plan))
+    assert result["valid"] is False
+    assert any("mutually exclusive" in e["message"] for e in result["errors"])
+
+
+# ---------------------------------------------------------------------------
+# submit_test_run
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_submit_valid_plan(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {"run_id": "r1", "plan_key": "plans/r1.yaml", "strategy": "intra_node"}
+        result = await fn(_VALID_PLAN_YAML, "test-label")
+    assert result["success"] is True
+    assert result["run_id"] == "r1"
+    mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_invalid_plan_returns_errors(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    result = await fn("not: valid: plan:", "label")
+    assert result["success"] is False
+    assert "errors" in result
+
+
+@pytest.mark.asyncio
+async def test_submit_catches_crucible_error(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(503, "ResourceExhausted: no capacity")
+        result = await fn(_VALID_PLAN_YAML, "label")
+    assert result["success"] is False
+    assert "ResourceExhausted" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_submit_injects_prometheus_url(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    with patch("crucible_mcp.tools.settings") as mock_settings, \
+         patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
+        mock_settings.k6_prometheus_rw_url = "http://prom:9090/write"
+        mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
+        await fn(_VALID_PLAN_YAML, "label")
+        # Verify the submitted YAML now contains the injected URL
+        submitted_yaml = mock_submit.call_args[0][0]
+        parsed = yaml.safe_load(submitted_yaml)
+        assert parsed["k6_prometheus_rw_server_url"] == "http://prom:9090/write"
+
+
+@pytest.mark.asyncio
+async def test_submit_does_not_overwrite_existing_prometheus_url(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    plan_with_prom = {**_VALID_PLAN, "k6_prometheus_rw_server_url": "http://existing:9090"}
+    plan_yaml = yaml.dump(plan_with_prom)
+    with patch("crucible_mcp.tools.settings") as mock_settings, \
+         patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
+        mock_settings.k6_prometheus_rw_url = "http://new:9090"
+        mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
+        await fn(plan_yaml, "label")
+        submitted_yaml = mock_submit.call_args[0][0]
+        parsed = yaml.safe_load(submitted_yaml)
+        assert parsed["k6_prometheus_rw_server_url"] == "http://existing:9090"
+
+
+# ---------------------------------------------------------------------------
+# monitor_test_progress
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_monitor_returns_status(mcp_app):
+    fn = _get_tool(mcp_app, "monitor_test_progress")
+    with patch("crucible_mcp.tools.client.get_run_status", new_callable=AsyncMock) as mock:
+        mock.return_value = {"run_id": "r1", "status": "EXECUTING"}
+        result = await fn("r1")
+    assert result["status"] == "EXECUTING"
+
+
+@pytest.mark.asyncio
+async def test_monitor_not_found_returns_error(mcp_app):
+    fn = _get_tool(mcp_app, "monitor_test_progress")
+    with patch("crucible_mcp.tools.client.get_run_status", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(404, "Run 'bad' not found.")
+        result = await fn("bad")
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_server_error_returns_error(mcp_app):
+    fn = _get_tool(mcp_app, "monitor_test_progress")
+    with patch("crucible_mcp.tools.client.get_run_status", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "Internal error")
+        result = await fn("r1")
+    assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# emergency_stop
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_emergency_stop_sends_sigterm(mcp_app):
+    fn = _get_tool(mcp_app, "emergency_stop")
+    with patch("crucible_mcp.tools.client.stop_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {"run_id": "r1", "action": "sigterm_sent"}
+        result = await fn("r1")
+    assert result["action"] == "sigterm_sent"
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_already_stopped(mcp_app):
+    fn = _get_tool(mcp_app, "emergency_stop")
+    with patch("crucible_mcp.tools.client.stop_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {"run_id": "r1", "action": "already_stopped"}
+        result = await fn("r1")
+    assert result["action"] == "already_stopped"
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_catches_error(mcp_app):
+    fn = _get_tool(mcp_app, "emergency_stop")
+    with patch("crucible_mcp.tools.client.stop_run", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "Internal error")
+        result = await fn("r1")
+    assert "error" in result

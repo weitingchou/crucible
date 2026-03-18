@@ -1,0 +1,19 @@
+{{- if .Values.mcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crucible.fullname" . }}-mcp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+    {{- include "crucible.selectorLabels" (dict "root" . "component" "mcp-server") | nindent 4 }}
+spec:
+  type: {{ .Values.mcp.service.type }}
+  ports:
+    - name: sse
+      port: {{ .Values.mcp.service.port }}
+      targetPort: sse
+      protocol: TCP
+  selector:
+    {{- include "crucible.selectorLabels" (dict "root" . "component" "mcp-server") | nindent 4 }}
+{{- end }}

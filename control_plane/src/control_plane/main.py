@@ -1,7 +1,10 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from .models import HealthResponse
-from .routers import fixtures, test_plans, test_runs
+from .routers import fixtures, test_plans, test_runs, sut, test_runs_v1, telemetry
+from .services import db
 
 _DESCRIPTION = """
 Crucible Control Plane manages test plans, brokers S3 uploads for fixture
@@ -45,16 +48,27 @@ _TAGS_METADATA = [
     },
 ]
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.init_pool()
+    yield
+    await db.close_pool()
+
+
 app = FastAPI(
     title="Crucible Control Plane",
     version="0.1.0",
     description=_DESCRIPTION,
     openapi_tags=_TAGS_METADATA,
+    lifespan=lifespan,
 )
 
 app.include_router(test_runs.router)
 app.include_router(fixtures.router)
 app.include_router(test_plans.router)
+app.include_router(sut.router)
+app.include_router(test_runs_v1.router)
+app.include_router(telemetry.router)
 
 
 @app.get("/health", tags=["ops"])

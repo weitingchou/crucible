@@ -5,6 +5,12 @@ import boto3
 
 from worker.celery_app import app
 from worker.config import settings
+from worker.db import (
+    get_start_signal,
+    increment_completed_and_check,
+    increment_ready_worker,
+    update_run_status,
+)
 from worker.driver_manager.k6_manager import spawn_k6, wait_and_teardown
 
 
@@ -30,9 +36,9 @@ def k6_executor_task(
 
     # ── 2. Horizontal synchronization (inter-node only) ──────────────────────
     if mode == "inter_node":
-        _increment_ready_worker(run_id)
+        increment_ready_worker(run_id)
         while True:
-            state = _get_start_signal(run_id)
+            state = get_start_signal(run_id)
             if state == "START":
                 break
             if state == "ABORT":
@@ -62,6 +68,12 @@ def k6_executor_task(
     for i in range(local_instances):
         _upload_to_s3(f"/tmp/k6_raw_{run_id}_{i}.csv", run_id, i)
     _cleanup(sql_paths, run_id, local_instances)
+
+    # ── 6. Mark completion ───────────────────────────────────────────────────
+    # For inter-node mode, only the last executor to finish marks the run as
+    # COMPLETED. For intra-node mode (single executor), always mark complete.
+    if mode == "intra_node" or increment_completed_and_check(run_id):
+        update_run_status(run_id, "COMPLETED", set_completed_at=True)
 
     return {"status": "completed", "mode": mode, "instances_run": local_instances}
 
@@ -122,29 +134,3 @@ def _sub_segment(segment_flag: str, index: int, total: int) -> str:
     sub_start = start + index * width
     sub_end = start + (index + 1) * width
     return f"{sub_start:.4f}%:{sub_end:.4f}%"
-
-
-# ── PostgreSQL waiting-room helpers ───────────────────────────────────────────
-
-def _db_conn():
-    import psycopg2
-    url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    return psycopg2.connect(url)
-
-
-def _increment_ready_worker(run_id: str) -> None:
-    with _db_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE waiting_room SET ready_count = ready_count + 1 WHERE run_id = %s",
-            (run_id,),
-        )
-        conn.commit()
-
-
-def _get_start_signal(run_id: str) -> str:
-    with _db_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT signal FROM waiting_room WHERE run_id = %s", (run_id,)
-        )
-        row = cur.fetchone()
-        return row[0] if row else "WAIT"

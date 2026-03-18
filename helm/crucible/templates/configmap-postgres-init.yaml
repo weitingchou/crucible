@@ -13,9 +13,31 @@ data:
     -- Distributed load-test synchronization.
     -- One row per active run; workers check in and poll for the global START signal.
     CREATE TABLE IF NOT EXISTS waiting_room (
-        run_id      TEXT        PRIMARY KEY,
-        ready_count INTEGER     NOT NULL DEFAULT 0,
-        target_count INTEGER    NOT NULL,
-        signal      TEXT        NOT NULL DEFAULT 'WAIT',  -- WAIT | START | ABORT
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        run_id          TEXT        PRIMARY KEY,
+        ready_count     INTEGER     NOT NULL DEFAULT 0,
+        completed_count INTEGER     NOT NULL DEFAULT 0,
+        target_count    INTEGER     NOT NULL,
+        signal          TEXT        NOT NULL DEFAULT 'WAIT',  -- WAIT | START | ABORT
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- Test run lifecycle tracking.
+    -- Inserted by the Control Plane at dispatch time (status=PENDING).
+    -- Updated by the Celery worker at each lifecycle transition.
+    -- Status enum: PENDING -> WAITING_ROOM -> EXECUTING -> COMPLETED | FAILED | STOPPING
+    CREATE TABLE IF NOT EXISTS test_runs (
+        run_id        TEXT        PRIMARY KEY,
+        task_id       TEXT,
+        plan_key      TEXT        NOT NULL,
+        run_label     TEXT        NOT NULL DEFAULT '',
+        sut_type      TEXT        NOT NULL DEFAULT '',
+        scaling_mode  TEXT        NOT NULL DEFAULT 'intra_node',
+        status        TEXT        NOT NULL DEFAULT 'PENDING',
+        error_detail  TEXT,
+        submitted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        started_at    TIMESTAMPTZ,
+        completed_at  TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_test_runs_status ON test_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_test_runs_submitted_at ON test_runs(submitted_at DESC);

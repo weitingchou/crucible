@@ -1,0 +1,167 @@
+"""V1 test-run endpoints — accept raw YAML, track lifecycle in PostgreSQL."""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+
+import boto3
+import yaml
+from celery import Celery
+from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
+
+from crucible_lib.schemas.test_plan import TestPlan
+
+from ..config import settings
+from ..models import (
+    ArtifactEntry,
+    ArtifactsResponse,
+    RunStatusResponse,
+    StopRunResponse,
+    SubmitRunRequest,
+    SubmitRunResponse,
+    WaitingRoomInfo,
+)
+from ..services import db
+
+router = APIRouter(prefix="/v1/test-runs", tags=["test-runs"])
+
+_celery = Celery(
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend,
+)
+
+
+def _s3():
+    return boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id or None,
+        aws_secret_access_key=settings.aws_secret_access_key or None,
+        endpoint_url=settings.aws_endpoint_url or None,
+    )
+
+
+@router.post("", summary="Submit a test run from raw YAML")
+async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
+    """Validate a YAML test plan, upload it to S3, dispatch to Celery, and
+    record the run in PostgreSQL. Returns the run_id immediately."""
+    # Parse and validate
+    try:
+        raw = yaml.safe_load(body.plan_yaml)
+        plan = TestPlan.model_validate(raw)
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {exc}")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+
+    # Save plan to S3 (sync boto3 → offload to thread)
+    run_id = str(uuid.uuid4())
+    plan_name = f"{run_id}.yaml"
+    plan_key = f"plans/{plan_name}"
+    await asyncio.to_thread(
+        _s3().put_object,
+        Bucket=settings.s3_bucket,
+        Key=plan_key,
+        Body=body.plan_yaml.encode(),
+    )
+
+    # Dispatch to Celery (sync → offload to thread)
+    result = await asyncio.to_thread(
+        _celery.send_task,
+        "worker.tasks.dispatcher.dispatcher_task",
+        args=(raw, run_id),
+    )
+
+    # Record in PostgreSQL
+    sut_type = plan.test_environment.component_spec.type
+    await db.insert_run(
+        run_id=run_id,
+        task_id=result.id,
+        plan_key=plan_key,
+        run_label=body.label,
+        sut_type=sut_type,
+        scaling_mode=plan.execution.scaling_mode,
+    )
+
+    return SubmitRunResponse(
+        run_id=run_id,
+        plan_key=plan_key,
+        strategy=plan.execution.scaling_mode,
+    )
+
+
+@router.get("/{run_id}/status", summary="Get test run status")
+async def get_run_status(run_id: str) -> RunStatusResponse:
+    """Return the current lifecycle status of a test run."""
+    row = await db.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    waiting_room = None
+    if row["status"] == "WAITING_ROOM":
+        wr = await db.get_waiting_room_info(run_id)
+        if wr:
+            waiting_room = WaitingRoomInfo(
+                ready_count=wr["ready_count"],
+                target_count=wr["target_count"],
+            )
+
+    def _fmt(ts) -> str | None:
+        return ts.isoformat() if ts else None
+
+    return RunStatusResponse(
+        run_id=row["run_id"],
+        status=row["status"],
+        run_label=row["run_label"],
+        sut_type=row["sut_type"],
+        scaling_mode=row["scaling_mode"],
+        submitted_at=_fmt(row["submitted_at"]),
+        started_at=_fmt(row["started_at"]),
+        completed_at=_fmt(row["completed_at"]),
+        error_detail=row["error_detail"],
+        waiting_room=waiting_room,
+    )
+
+
+@router.post("/{run_id}/stop", summary="Emergency stop a test run")
+async def stop_run(run_id: str) -> StopRunResponse:
+    """Send SIGTERM to the Celery task. The worker's teardown path escalates
+    to SIGKILL if k6 subprocesses don't exit within the grace period."""
+    row = await db.get_run(run_id)
+    if not row:
+        return StopRunResponse(run_id=run_id, action="not_found")
+
+    if row["status"] in ("COMPLETED", "FAILED", "STOPPING"):
+        return StopRunResponse(run_id=run_id, action="already_stopped")
+
+    # Mark as stopping in DB
+    await db.update_run_status(run_id, "STOPPING")
+
+    # Revoke the Celery task with SIGTERM (sync → offload to thread)
+    if row["task_id"]:
+        await asyncio.to_thread(
+            _celery.control.revoke, row["task_id"], terminate=True, signal="SIGTERM"
+        )
+
+    return StopRunResponse(run_id=run_id, action="sigterm_sent")
+
+
+@router.get("/{run_id}/artifacts", summary="List S3 artifacts for a run")
+async def list_run_artifacts(run_id: str) -> ArtifactsResponse:
+    """Return the CSV artifact files uploaded to S3 after the run completed."""
+
+    def _list_objects() -> list[ArtifactEntry]:
+        s3 = _s3()
+        paginator = s3.get_paginator("list_objects_v2")
+        return [
+            ArtifactEntry(key=obj["Key"], size=obj["Size"])
+            for page in paginator.paginate(
+                Bucket=settings.s3_bucket, Prefix=f"results/{run_id}/"
+            )
+            for obj in page.get("Contents", [])
+        ]
+
+    artifacts = await asyncio.to_thread(_list_objects)
+    return ArtifactsResponse(run_id=run_id, artifacts=artifacts)

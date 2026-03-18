@@ -46,6 +46,11 @@ spec:
                   key: celery-broker-url
             - name: CELERY_RESULT_BACKEND
               value: "rpc://"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crucible.secretName" . }}
+                  key: postgres-url
             - name: S3_BUCKET
               value: {{ if .Values.minio.enabled }}{{ .Values.minio.defaultBucket | quote }}{{ else }}{{ .Values.s3.bucket | quote }}{{ end }}
             - name: AWS_REGION

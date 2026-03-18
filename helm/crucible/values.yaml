@@ -171,6 +171,39 @@ s3:
   accessKeyId: ""          # Leave empty when using IRSA
   secretAccessKey: ""      # Leave empty when using IRSA
 
+# ── MCP Server ───────────────────────────────────────────────────────────────
+mcp:
+  enabled: true
+  image:
+    repository: crucible/mcp
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  # Bearer token for SSE authentication. Leave empty to disable auth.
+  apiToken: ""
+
+  service:
+    type: ClusterIP
+    port: 8001
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: crucible-mcp.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # ── Prometheus ────────────────────────────────────────────────────────────────
 prometheus:
   enabled: true

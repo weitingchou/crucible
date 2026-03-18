@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["control_plane", "worker", "lib"]
+members = ["control_plane", "worker", "lib", "mcp_server"]
 
 [dependency-groups]
 dev = [

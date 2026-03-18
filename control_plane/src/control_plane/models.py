@@ -65,3 +65,78 @@ class MultipartCompleteResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+# ── V1 models ────────────────────────────────────────────────────────────────
+
+class SutTypesResponse(BaseModel):
+    sut_types: list[str]
+
+
+class SutInstance(BaseModel):
+    run_id: str
+    run_label: str
+    sut_type: str
+    status: str
+
+
+class SutInventoryResponse(BaseModel):
+    active: list[SutInstance]
+
+
+class SubmitRunRequest(BaseModel):
+    plan_yaml: str
+    label: str = "ai-generated-test"
+
+
+class SubmitRunResponse(BaseModel):
+    run_id: str
+    plan_key: str
+    strategy: str
+
+
+class WaitingRoomInfo(BaseModel):
+    ready_count: int
+    target_count: int
+
+
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: str
+    run_label: str
+    sut_type: str
+    scaling_mode: str
+    submitted_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error_detail: str | None = None
+    waiting_room: WaitingRoomInfo | None = None
+
+
+class StopRunResponse(BaseModel):
+    run_id: str
+    action: str  # "sigterm_sent" | "already_stopped" | "not_found"
+
+
+class ArtifactEntry(BaseModel):
+    key: str
+    size: int
+
+
+class ArtifactsResponse(BaseModel):
+    run_id: str
+    artifacts: list[ArtifactEntry]
+
+
+class RunSummary(BaseModel):
+    run_id: str
+    run_label: str
+    sut_type: str
+    status: str
+    scaling_mode: str
+    submitted_at: str
+    completed_at: str | None = None
+
+
+class RecentStatsResponse(BaseModel):
+    runs: list[RunSummary]

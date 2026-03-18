@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     celery_broker_url: str = "amqp://guest:guest@localhost:5672//"
     celery_result_backend: str = "rpc://"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/crucible"
 
 
 settings = Settings()
