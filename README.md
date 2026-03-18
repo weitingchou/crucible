@@ -6,21 +6,30 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Client                                                 │
+│  AI Agent / Client                                      │
 │  • Uploads test plans (YAML) and SQL workload files     │
 │  • Uploads fixture datasets directly to S3/MinIO        │
-└─────────────────────┬───────────────────────────────────┘
-                      │ REST API
-┌─────────────────────▼───────────────────────────────────┐
+└──────────┬──────────────────────────────────────────────┘
+           │ MCP (stdio / SSE)
+┌──────────▼──────────────────────────────────────────────┐
+│  MCP Server (FastMCP · port 8001)                       │
+│  • 6 tools: validate, submit, monitor, stop, SUT ops    │
+│  • 3 resources: fixtures, telemetry, logs               │
+│  • Bearer auth middleware (SSE mode)                    │
+└──────────┬──────────────────────────────────────────────┘
+           │ REST API
+┌──────────▼──────────────────────────────────────────────┐
 │  Control Plane (FastAPI · port 8000)                    │
 │  • Validates test plans · brokers S3 multipart uploads  │
+│  • V1 API: run lifecycle tracking in PostgreSQL         │
 │  • Dispatches Celery tasks based on scaling_mode        │
-└─────────────────────┬───────────────────────────────────┘
-                      │ RabbitMQ
-┌─────────────────────▼───────────────────────────────────┐
+└──────────┬──────────────────────────────────────────────┘
+           │ RabbitMQ
+┌──────────▼──────────────────────────────────────────────┐
 │  Execution Worker (Celery)                              │
-│  • Lease Manager → Fixture Loader → Taurus → k6 (xk6)  │
-│  • Pushes metrics to Prometheus Pushgateway             │
+│  • Lease Manager → Fixture Loader → Driver Mgr → k6    │
+│  • Pushes metrics to Prometheus remote-write            │
+│  • Writes lifecycle status to PostgreSQL                │
 └─────────────────────────────────────────────────────────┘
 
 Infrastructure: RabbitMQ · PostgreSQL · MinIO · Prometheus
@@ -33,17 +42,30 @@ crucible/
 ├── control_plane/          # FastAPI service
 │   ├── src/control_plane/
 │   │   ├── main.py
-│   │   ├── routers/        # fixtures, test_runs
-│   │   └── services/       # dispatcher, s3_broker
+│   │   ├── routers/        # fixtures, test_runs, sut, test_runs_v1, telemetry
+│   │   └── services/       # dispatcher, s3_broker, db (asyncpg)
+│   ├── tests/
+│   ├── pyproject.toml
+│   └── Dockerfile
+├── mcp_server/             # MCP server (FastMCP)
+│   ├── src/crucible_mcp/
+│   │   ├── server.py       # Entrypoint (stdio / SSE)
+│   │   ├── tools.py        # 6 MCP tools
+│   │   ├── resources.py    # 3 MCP resources
+│   │   ├── client.py       # HTTP client for Control Plane
+│   │   ├── errors.py       # HTTP → MCP error mapping
+│   │   └── config.py       # Settings (pydantic-settings)
+│   ├── tests/
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── worker/                 # Celery worker
 │   ├── src/worker/
 │   │   ├── celery_app.py
-│   │   ├── tasks/          # master, runner
+│   │   ├── db.py           # Shared PostgreSQL helpers
+│   │   ├── tasks/          # dispatcher, executor
 │   │   ├── fixture_loader/ # zero_download, streaming, standard
-│   │   ├── orchestrator/   # taurus
 │   │   └── drivers/        # generic_sql_driver.js (k6)
+│   ├── tests/
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── lib/                    # Shared library (crucible-lib)
@@ -51,9 +73,11 @@ crucible/
 │   │   ├── schemas/        # TestPlan, ExecutionConfig, etc.
 │   │   └── lease_manager/
 │   └── pyproject.toml
+├── helm/crucible/          # Helm chart (EKS deployment)
 ├── infrastructure/
 │   ├── docker-compose.yml
 │   └── config/
+│       ├── postgres/       # init.sql (waiting_room, test_runs)
 │       ├── prometheus.yml
 │       └── rabbitmq/
 └── pyproject.toml          # uv workspace root
@@ -85,6 +109,7 @@ To install a specific package only (e.g. for CI):
 ```bash
 uv sync --package crucible-control-plane --no-dev
 uv sync --package crucible-worker --no-dev
+uv sync --package crucible-mcp --no-dev
 ```
 
 ### Build Docker images
@@ -119,6 +144,7 @@ This starts the full stack:
 |---|---|---|
 | Control Plane API | http://localhost:8000 | REST API |
 | API Docs (Swagger) | http://localhost:8000/docs | Interactive API docs |
+| MCP Server | stdio (default) or http://localhost:8001 (SSE) | AI agent interface |
 | RabbitMQ Management | http://localhost:15672 | Queue monitoring (guest/guest) |
 | MinIO Console | http://localhost:9001 | S3-compatible object store UI (minioadmin/minioadmin) |
 | MinIO API | http://localhost:9000 | S3 endpoint for boto3/clients |
@@ -237,25 +263,93 @@ The worker injects DB credentials and infrastructure endpoints automatically at 
 | `CELERY_BROKER_URL` | `amqp://guest:guest@rabbitmq:5672//` | RabbitMQ connection |
 | `S3_BUCKET` | `project-crucible-storage` | MinIO/S3 bucket name |
 | `AWS_ENDPOINT_URL` | `http://minio:9000` | MinIO endpoint |
-| `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL for lease management |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL for lease management and run lifecycle |
 | `PUSHGATEWAY_URL` | `http://pushgateway:9091` | Prometheus Pushgateway |
 | `RUNNER_IP` | `127.0.0.1` | Worker's IP (set by scheduler for inter-node scaling) |
 
 ---
 
-## 3. Testing the Project
+## 3. MCP Server (AI Agent Interface)
+
+The MCP server exposes Crucible's capabilities to AI agents via the [Model Context Protocol](https://modelcontextprotocol.io). It supports stdio (local) and SSE (networked) transports.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `list_supported_suts` | Returns supported database engine types (doris, trino, cassandra) |
+| `get_db_inventory` | Lists SUT instances held by active test runs |
+| `validate_test_plan` | Validates a YAML test plan locally (no network call) |
+| `submit_test_run` | Validates, auto-injects Prometheus URL, and submits a test run |
+| `monitor_test_progress` | Returns real-time lifecycle status of a test run |
+| `emergency_stop` | Sends SIGTERM → SIGKILL escalation to stop a running test |
+
+### Resources
+
+| URI | Description |
+|---|---|
+| `crucible://fixtures/registry` | Metadata about uploaded datasets in S3/MinIO |
+| `crucible://telemetry/recent-stats` | Summary of the last 5 test runs |
+| `crucible://logs/{run_id}` | S3 artifact files produced by a test run |
+
+### Run locally (stdio mode)
+
+```bash
+uv run python -m crucible_mcp
+```
+
+### Run as SSE server
+
+```bash
+TRANSPORT=sse CRUCIBLE_API_URL=http://localhost:8000 uv run python -m crucible_mcp
+```
+
+### Connect from Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "crucible": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/crucible", "python", "-m", "crucible_mcp"],
+      "env": {
+        "CRUCIBLE_API_URL": "http://localhost:8000"
+      }
+    }
+  }
+}
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `CRUCIBLE_API_URL` | `http://localhost:8000` | Control Plane base URL |
+| `CRUCIBLE_API_TOKEN` | (empty) | Bearer token for auth (also enables SSE auth middleware) |
+| `TRANSPORT` | `stdio` | Transport mode: `stdio` or `sse` |
+| `SSE_HOST` | `0.0.0.0` | SSE server bind address |
+| `SSE_PORT` | `8001` | SSE server port |
+| `K6_PROMETHEUS_RW_URL` | (empty) | Auto-injected into submitted test plans if set |
+
+---
+
+## 4. Testing the Project
 
 ### Run all tests
 
 ```bash
-uv run pytest
+uv run pytest control_plane/ mcp_server/tests/
+cd worker && uv run pytest
 ```
 
 ### Run tests for a specific package
 
 ```bash
-uv run pytest control_plane/
-uv run pytest worker/
+uv run pytest control_plane/          # Control plane (original + V1 routers)
+uv run pytest mcp_server/tests/       # MCP server (tools, resources, client, errors, auth)
+cd worker && uv run pytest            # Worker (shared DB module)
 uv run pytest lib/
 ```
 
@@ -268,14 +362,15 @@ uv run pytest -v
 ### Run a specific test file or test case
 
 ```bash
-uv run pytest worker/tests/test_fixture_loader.py
+uv run pytest mcp_server/tests/test_tools.py
+uv run pytest mcp_server/tests/test_tools.py::test_validate_valid_plan
 uv run pytest worker/tests/test_fixture_loader.py::test_zero_download_strategy
 ```
 
 ### Type checking
 
 ```bash
-uv run mypy control_plane/src worker/src lib/src
+uv run mypy control_plane/src worker/src lib/src mcp_server/src
 ```
 
 ### Linting
@@ -287,7 +382,7 @@ uv run ruff format --check .
 
 ---
 
-## 4. End-to-End Testing with Apache Doris
+## 5. End-to-End Testing with Apache Doris
 
 The Doris FE, BE, and init services are gated behind the `doris` Compose profile so they don't start during normal development.
 
