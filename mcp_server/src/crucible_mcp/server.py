@@ -58,7 +58,9 @@ def main() -> None:
             import uvicorn
             uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)
         else:
-            mcp.run(transport="sse", host=settings.sse_host, port=settings.sse_port)
+            starlette_app = mcp.sse_app()
+            import uvicorn
+            uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)
     else:
         logger.info("Starting Crucible MCP in stdio mode")
         mcp.run(transport="stdio")

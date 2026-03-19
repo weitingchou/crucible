@@ -26,7 +26,7 @@ controlPlane:
   image:
     repository: crucible/control-plane
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
   replicaCount: 1
 
@@ -63,7 +63,7 @@ worker:
   image:
     repository: crucible/worker
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
   replicaCount: 1
 
@@ -177,7 +177,7 @@ mcp:
   image:
     repository: crucible/mcp
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
 
   replicaCount: 1
 
