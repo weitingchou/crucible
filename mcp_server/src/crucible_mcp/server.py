@@ -50,17 +50,12 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 def main() -> None:
     if settings.transport == "sse":
-        logger.info("Starting Crucible MCP in SSE mode on %s:%d", settings.sse_host, settings.sse_port)
+        logger.info("Starting Crucible MCP (streamable-http) on %s:%d", settings.sse_host, settings.sse_port)
+        import uvicorn
+        starlette_app = mcp.streamable_http_app()
         if settings.crucible_api_token:
-            # Protect the SSE endpoint with the same token used for the Control Plane
-            starlette_app = mcp.sse_app()
             starlette_app.add_middleware(BearerAuthMiddleware, token=settings.crucible_api_token)
-            import uvicorn
-            uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)
-        else:
-            starlette_app = mcp.sse_app()
-            import uvicorn
-            uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)
+        uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)
     else:
         logger.info("Starting Crucible MCP in stdio mode")
         mcp.run(transport="stdio")
