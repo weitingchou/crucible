@@ -28,6 +28,7 @@ mcp = FastMCP(
         "Translates natural language intent into structured load test operations: "
         "validate plans, submit runs, monitor progress, and stop workers."
     ),
+    json_response=True,
 )
 
 register_tools(mcp)
