@@ -81,13 +81,16 @@ def k6_executor_task(
 # ── S3 helpers ────────────────────────────────────────────────────────────────
 
 def _s3_client():
-    return boto3.client(
-        "s3",
-        region_name=settings.aws_region,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
-        endpoint_url=settings.aws_endpoint_url or None,
-    )
+    kwargs: dict = {
+        "region_name": settings.aws_region,
+        "endpoint_url": settings.aws_endpoint_url or None,
+    }
+    # Only pass explicit credentials when set (e.g. local MinIO).
+    # On EKS with IRSA, leave them unset so boto3 uses the default chain.
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    return boto3.client("s3", **kwargs)
 
 
 def _download_sql_fixtures(workloads: list[dict]) -> list[str]:
