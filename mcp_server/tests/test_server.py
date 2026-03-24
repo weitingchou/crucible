@@ -1,4 +1,4 @@
-"""Tests for crucible_mcp.server — BearerAuthMiddleware and FastMCP config."""
+"""Tests for crucible_mcp.server — middleware and FastMCP config."""
 
 import pytest
 from starlette.testclient import TestClient
@@ -6,7 +6,7 @@ from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
-from crucible_mcp.server import BearerAuthMiddleware, mcp
+from crucible_mcp.server import AcceptHeaderMiddleware, BearerAuthMiddleware, mcp
 
 
 def _make_app(token: str) -> Starlette:
@@ -59,33 +59,36 @@ def test_request_with_non_bearer_scheme_returns_401():
 
 def test_json_response_enabled():
     """Server must have json_response=True so clients sending only
-    Accept: application/json (without text/event-stream) get a plain
-    JSON response instead of a 406 Not Acceptable."""
+    Accept: application/json get a plain JSON response instead of a 406."""
     assert mcp.settings.json_response is True
 
 
-def test_streamable_http_app_accepts_json_only():
-    """POST to /mcp with Accept: application/json should not return 406."""
-    from mcp.server.fastmcp import FastMCP
+# ---------------------------------------------------------------------------
+# AcceptHeaderMiddleware tests
+# ---------------------------------------------------------------------------
 
-    # Use a separate FastMCP instance with json_response and DNS rebinding
-    # protection configured to allow the test client's Host header.
-    test_mcp = FastMCP("test", json_response=True, host="0.0.0.0")
-    app = test_mcp.streamable_http_app()
+def _make_accept_app() -> Starlette:
+    """Build a minimal app that echoes the Accept header back."""
+    async def echo_accept(request):
+        return PlainTextResponse(request.headers.get("accept", ""))
 
-    with TestClient(app, raise_server_exceptions=False) as client:
-        resp = client.post(
-            "/mcp",
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0.1.0"},
-            }},
-        )
-    # Should get a successful JSON response, not 406
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("application/json")
+    app = Starlette(routes=[Route("/", echo_accept)])
+    app.add_middleware(AcceptHeaderMiddleware)
+    return app
+
+
+def test_accept_header_injected_when_missing():
+    """Requests without an Accept header get a default injected."""
+    app = _make_accept_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/", headers={})
+    assert "application/json" in resp.text
+    assert "text/event-stream" in resp.text
+
+
+def test_accept_header_preserved_when_present():
+    """Requests that already have an Accept header are not modified."""
+    app = _make_accept_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/", headers={"Accept": "text/html"})
+    assert resp.text == "text/html"

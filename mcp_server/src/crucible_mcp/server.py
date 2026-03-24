@@ -35,6 +35,28 @@ register_tools(mcp)
 register_resources(mcp)
 
 
+class AcceptHeaderMiddleware(BaseHTTPMiddleware):
+    """Inject a default Accept header when the client omits it.
+
+    The MCP streamable-http library rejects requests with a 406 if the
+    Accept header is missing.  Some clients (e.g. Claude Code) don't send
+    one, so we default to ``application/json`` to satisfy the check.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        accept = request.headers.get("accept", "")
+        needs_fix = not accept or accept.strip() == "*/*"
+        if needs_fix:
+            # Replace the accept header in the raw ASGI scope so downstream
+            # ASGI apps (the MCP handler) see the corrected value.
+            raw_headers = [
+                (k, v) for k, v in request.scope["headers"] if k != b"accept"
+            ]
+            raw_headers.append((b"accept", b"application/json, text/event-stream"))
+            request.scope["headers"] = raw_headers
+        return await call_next(request)
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """Reject SSE requests that lack a valid Bearer token."""
 
@@ -54,6 +76,7 @@ def main() -> None:
         logger.info("Starting Crucible MCP (streamable-http) on %s:%d", settings.sse_host, settings.sse_port)
         import uvicorn
         starlette_app = mcp.streamable_http_app()
+        starlette_app.add_middleware(AcceptHeaderMiddleware)
         if settings.crucible_api_token:
             starlette_app.add_middleware(BearerAuthMiddleware, token=settings.crucible_api_token)
         uvicorn.run(starlette_app, host=settings.sse_host, port=settings.sse_port)

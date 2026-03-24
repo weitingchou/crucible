@@ -11,7 +11,7 @@ minio:
   enabled: false
 
 s3:
-  bucket: ""                 # Your S3 bucket name, e.g. "my-crucible-storage"
+  bucket: "claude-bot-workspace-project-crucible-storage"
   region: ap-southeast-1
   endpointUrl: ""            # Leave empty for AWS S3
   accessKeyId: ""            # Leave empty when using IRSA (recommended)
