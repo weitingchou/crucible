@@ -17,6 +17,7 @@ async def recent_stats() -> RecentStatsResponse:
     runs = [
         RunSummary(
             run_id=r["run_id"],
+            plan_name=r["plan_name"],
             run_label=r["run_label"],
             sut_type=r["sut_type"],
             status=r["status"],

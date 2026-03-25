@@ -86,7 +86,8 @@ class SutInventoryResponse(BaseModel):
 
 class SubmitRunRequest(BaseModel):
     plan_yaml: str
-    label: str = "ai-generated-test"
+    plan_name: str
+    label: str = ""
 
 
 class SubmitRunResponse(BaseModel):
@@ -103,6 +104,7 @@ class WaitingRoomInfo(BaseModel):
 class RunStatusResponse(BaseModel):
     run_id: str
     status: str
+    plan_name: str
     run_label: str
     sut_type: str
     scaling_mode: str
@@ -130,6 +132,7 @@ class ArtifactsResponse(BaseModel):
 
 class RunSummary(BaseModel):
     run_id: str
+    plan_name: str
     run_label: str
     sut_type: str
     status: str

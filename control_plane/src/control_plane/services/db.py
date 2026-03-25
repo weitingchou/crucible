@@ -34,6 +34,7 @@ def _get_pool() -> asyncpg.Pool:
 async def insert_run(
     run_id: str,
     task_id: str,
+    plan_name: str,
     plan_key: str,
     run_label: str,
     sut_type: str,
@@ -41,11 +42,11 @@ async def insert_run(
 ) -> None:
     await _get_pool().execute(
         """
-        INSERT INTO test_runs (run_id, task_id, plan_key, run_label, sut_type, scaling_mode)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO test_runs (run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (run_id) DO NOTHING
         """,
-        run_id, task_id, plan_key, run_label, sut_type, scaling_mode,
+        run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode,
     )
 
 

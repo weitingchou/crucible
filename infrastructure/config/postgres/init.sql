@@ -19,8 +19,9 @@ CREATE TABLE IF NOT EXISTS waiting_room (
 CREATE TABLE IF NOT EXISTS test_runs (
     run_id        TEXT        PRIMARY KEY,
     task_id       TEXT,                            -- Celery AsyncResult ID
-    plan_key      TEXT        NOT NULL,            -- S3 key, e.g. "plans/foo.yaml"
-    run_label     TEXT        NOT NULL DEFAULT '',
+    plan_name     TEXT        NOT NULL DEFAULT '',  -- stable plan identity, e.g. "smoke-test"
+    plan_key      TEXT        NOT NULL,            -- S3 key, e.g. "plans/smoke-test"
+    run_label     TEXT        NOT NULL DEFAULT '',  -- free-form display label
     sut_type      TEXT        NOT NULL DEFAULT '',
     scaling_mode  TEXT        NOT NULL DEFAULT 'intra_node',
     status        TEXT        NOT NULL DEFAULT 'PENDING',
@@ -32,3 +33,4 @@ CREATE TABLE IF NOT EXISTS test_runs (
 
 CREATE INDEX IF NOT EXISTS idx_test_runs_status ON test_runs(status);
 CREATE INDEX IF NOT EXISTS idx_test_runs_submitted_at ON test_runs(submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_test_runs_plan_key ON test_runs(plan_key);

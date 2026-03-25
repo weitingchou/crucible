@@ -24,6 +24,7 @@ def test_recent_stats_returns_formatted_runs():
         mock.return_value = [
             {
                 "run_id": "r1",
+                "plan_name": "smoke-test",
                 "run_label": "smoke",
                 "sut_type": "doris",
                 "status": "COMPLETED",
@@ -46,6 +47,7 @@ def test_recent_stats_handles_null_completed_at():
         mock.return_value = [
             {
                 "run_id": "r2",
+                "plan_name": "load-test",
                 "run_label": "pending",
                 "sut_type": "trino",
                 "status": "PENDING",

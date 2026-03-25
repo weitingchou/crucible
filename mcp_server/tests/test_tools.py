@@ -1,4 +1,4 @@
-"""Tests for crucible_mcp.tools — all 7 MCP tools."""
+"""Tests for crucible_mcp.tools — all 8 MCP tools."""
 
 import pytest
 import yaml
@@ -149,6 +149,47 @@ async def test_validate_mutually_exclusive_cluster_fields(mcp_app):
 
 
 # ---------------------------------------------------------------------------
+# upload_test_plan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upload_test_plan_succeeds(mcp_app):
+    fn = _get_tool(mcp_app, "upload_test_plan")
+    with patch("crucible_mcp.tools.client.upload_plan", new_callable=AsyncMock) as mock:
+        mock.return_value = {"key": "plans/my-plan"}
+        result = await fn(_VALID_PLAN_YAML, "my-plan")
+    assert result["success"] is True
+    assert result["key"] == "plans/my-plan"
+    mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_test_plan_invalid_yaml(mcp_app):
+    fn = _get_tool(mcp_app, "upload_test_plan")
+    result = await fn("not: valid: plan:", "name")
+    assert result["success"] is False
+    assert "errors" in result
+
+
+@pytest.mark.asyncio
+async def test_upload_test_plan_catches_crucible_error(mcp_app):
+    fn = _get_tool(mcp_app, "upload_test_plan")
+    with patch("crucible_mcp.tools.client.upload_plan", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "S3 unavailable")
+        result = await fn(_VALID_PLAN_YAML, "name")
+    assert result["success"] is False
+    assert "S3 unavailable" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_upload_test_plan_does_not_call_api_on_invalid(mcp_app):
+    fn = _get_tool(mcp_app, "upload_test_plan")
+    with patch("crucible_mcp.tools.client.upload_plan", new_callable=AsyncMock) as mock:
+        await fn("{{bad yaml", "name")
+    mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # submit_test_run
 # ---------------------------------------------------------------------------
 
@@ -156,8 +197,8 @@ async def test_validate_mutually_exclusive_cluster_fields(mcp_app):
 async def test_submit_valid_plan(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
-        mock.return_value = {"run_id": "r1", "plan_key": "plans/r1.yaml", "strategy": "intra_node"}
-        result = await fn(_VALID_PLAN_YAML, "test-label")
+        mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
+        result = await fn(_VALID_PLAN_YAML, "smoke", "test-label")
     assert result["success"] is True
     assert result["run_id"] == "r1"
     mock.assert_awaited_once()
@@ -166,7 +207,7 @@ async def test_submit_valid_plan(mcp_app):
 @pytest.mark.asyncio
 async def test_submit_invalid_plan_returns_errors(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
-    result = await fn("not: valid: plan:", "label")
+    result = await fn("not: valid: plan:", "name")
     assert result["success"] is False
     assert "errors" in result
 
@@ -176,7 +217,7 @@ async def test_submit_catches_crucible_error(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.side_effect = CrucibleError(503, "ResourceExhausted: no capacity")
-        result = await fn(_VALID_PLAN_YAML, "label")
+        result = await fn(_VALID_PLAN_YAML, "smoke")
     assert result["success"] is False
     assert "ResourceExhausted" in result["error"]
 
@@ -188,7 +229,7 @@ async def test_submit_injects_prometheus_url(mcp_app):
          patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
         mock_settings.k6_prometheus_rw_url = "http://prom:9090/write"
         mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
-        await fn(_VALID_PLAN_YAML, "label")
+        await fn(_VALID_PLAN_YAML, "smoke")
         # Verify the submitted YAML now contains the injected URL
         submitted_yaml = mock_submit.call_args[0][0]
         parsed = yaml.safe_load(submitted_yaml)
@@ -204,7 +245,7 @@ async def test_submit_does_not_overwrite_existing_prometheus_url(mcp_app):
          patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
         mock_settings.k6_prometheus_rw_url = "http://new:9090"
         mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
-        await fn(plan_yaml, "label")
+        await fn(plan_yaml, "smoke")
         submitted_yaml = mock_submit.call_args[0][0]
         parsed = yaml.safe_load(submitted_yaml)
         assert parsed["k6_prometheus_rw_server_url"] == "http://existing:9090"

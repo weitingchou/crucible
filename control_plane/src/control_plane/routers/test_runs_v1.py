@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 
 import boto3
 import yaml
+from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
@@ -24,6 +26,7 @@ from ..models import (
     WaitingRoomInfo,
 )
 from ..services import db
+from ..utils import sanitize_plan_name
 
 router = APIRouter(prefix="/v1/test-runs", tags=["test-runs"])
 
@@ -43,10 +46,17 @@ def _s3():
     )
 
 
+def _generate_run_id(plan_name: str) -> str:
+    """Return a human-readable run ID: ``{plan_name}_{YYYYMMDD-HHmm}_{8hex}``."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    short_uuid = uuid.uuid4().hex[:8]
+    return f"{plan_name}_{ts}_{short_uuid}"
+
+
 @router.post("", summary="Submit a test run from raw YAML")
 async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
-    """Validate a YAML test plan, upload it to S3, dispatch to Celery, and
-    record the run in PostgreSQL. Returns the run_id immediately."""
+    """Validate a YAML test plan, upload it to S3 under a stable name,
+    dispatch to Celery, and record the run in PostgreSQL."""
     # Parse and validate
     try:
         raw = yaml.safe_load(body.plan_yaml)
@@ -56,16 +66,20 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors())
 
-    # Save plan to S3 (sync boto3 → offload to thread)
-    run_id = str(uuid.uuid4())
-    plan_name = f"{run_id}.yaml"
+    # Derive stable plan identity
+    plan_name = sanitize_plan_name(body.plan_name)
     plan_key = f"plans/{plan_name}"
+
+    # Save plan to S3 under stable name (upsert)
     await asyncio.to_thread(
         _s3().put_object,
         Bucket=settings.s3_bucket,
         Key=plan_key,
         Body=body.plan_yaml.encode(),
     )
+
+    # Generate human-readable run_id
+    run_id = _generate_run_id(plan_name)
 
     # Dispatch to Celery (sync → offload to thread)
     result = await asyncio.to_thread(
@@ -79,8 +93,72 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
     await db.insert_run(
         run_id=run_id,
         task_id=result.id,
+        plan_name=plan_name,
         plan_key=plan_key,
-        run_label=body.label,
+        run_label=body.label or body.plan_name,
+        sut_type=sut_type,
+        scaling_mode=plan.execution.scaling_mode,
+    )
+
+    return SubmitRunResponse(
+        run_id=run_id,
+        plan_key=plan_key,
+        strategy=plan.execution.scaling_mode,
+    )
+
+
+@router.post(
+    "/{plan_name}",
+    summary="Trigger a test run against an existing plan",
+    responses={404: {"description": "Test plan not found in S3"}},
+)
+async def trigger_run_by_plan(plan_name: str) -> SubmitRunResponse:
+    """Fetch an already-uploaded plan from S3 by *plan_name*, dispatch a new
+    test run, and record it in PostgreSQL."""
+    plan_key = f"plans/{plan_name}"
+
+    # Fetch plan from S3
+    try:
+        resp = await asyncio.to_thread(
+            _s3().get_object,
+            Bucket=settings.s3_bucket,
+            Key=plan_key,
+        )
+        plan_bytes = resp["Body"].read()
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Test plan '{plan_name}' not found.",
+            )
+        raise
+
+    # Parse and validate
+    try:
+        raw = yaml.safe_load(plan_bytes)
+        plan = TestPlan.model_validate(raw)
+    except (yaml.YAMLError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Generate human-readable run_id
+    run_id = _generate_run_id(plan_name)
+
+    # Dispatch to Celery
+    result = await asyncio.to_thread(
+        _celery.send_task,
+        "worker.tasks.dispatcher.dispatcher_task",
+        args=(raw, run_id),
+    )
+
+    # Record in PostgreSQL
+    sut_type = plan.test_environment.component_spec.type
+    run_label = raw.get("test_metadata", {}).get("run_label", plan_name)
+    await db.insert_run(
+        run_id=run_id,
+        task_id=result.id,
+        plan_name=plan_name,
+        plan_key=plan_key,
+        run_label=run_label,
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
     )
@@ -114,6 +192,7 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
     return RunStatusResponse(
         run_id=row["run_id"],
         status=row["status"],
+        plan_name=row["plan_name"],
         run_label=row["run_label"],
         sut_type=row["sut_type"],
         scaling_mode=row["scaling_mode"],

@@ -53,11 +53,34 @@ def register_tools(mcp: FastMCP) -> None:
         return {"valid": True}
 
     @mcp.tool()
-    async def submit_test_run(plan_yaml: str, label: str = "ai-generated-test") -> dict:
+    async def upload_test_plan(plan_yaml: str, name: str) -> dict:
+        """Validates and uploads a test plan to Crucible without starting a run.
+
+        The plan is stored under the given *name* and can be reused for
+        multiple test runs via ``submit_test_run`` or ``trigger_run_by_plan``.
+
+        Returns ``{"success": true, "key": "plans/<name>"}`` on success.
+        """
+        validation = await validate_test_plan(plan_yaml)
+        if not validation["valid"]:
+            return {"success": False, "errors": validation["errors"]}
+
+        try:
+            raw = yaml.safe_load(plan_yaml)
+            result = await client.upload_plan(name, raw)
+        except CrucibleError as exc:
+            return {"success": False, "error": exc.detail}
+        return {"success": True, **result}
+
+    @mcp.tool()
+    async def submit_test_run(plan_yaml: str, plan_name: str, label: str = "") -> dict:
         """Validates and submits a YAML test plan to the Crucible dispatcher.
 
         Validates the plan locally first. If valid, automatically injects
         K6_PROMETHEUS_RW_SERVER_URL into the plan environment if configured.
+
+        *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
+        *label* is an optional free-form display label; defaults to *plan_name* if empty.
         Returns the run_id on success.
         """
         # Validate locally first
@@ -76,7 +99,7 @@ def register_tools(mcp: FastMCP) -> None:
                 pass  # best-effort injection
 
         try:
-            result = await client.submit_run(plan_yaml, label)
+            result = await client.submit_run(plan_yaml, plan_name, label)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}

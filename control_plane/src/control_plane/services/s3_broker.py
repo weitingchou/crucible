@@ -78,6 +78,18 @@ async def complete_multipart(
     return {"key": key, "status": "completed"}
 
 
+async def plan_exists(name: str) -> bool:
+    """Return *True* if a plan with the given *name* already exists in S3."""
+    key = f"plans/{name}"
+    try:
+        _s3.head_object(Bucket=settings.s3_bucket, Key=key)
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+
+
 async def save_plan(name: str, content: bytes) -> dict:
     key = f"plans/{name}"
     _s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=content)

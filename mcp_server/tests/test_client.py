@@ -42,6 +42,9 @@ class _FakeClient:
     async def post(self, url, **kw):
         return self._resp
 
+    async def put(self, url, **kw):
+        return self._resp
+
 
 # ---------------------------------------------------------------------------
 # list_sut_types
@@ -72,10 +75,10 @@ async def test_list_sut_types_raises_on_error():
 
 @pytest.mark.asyncio
 async def test_submit_run_posts_json():
-    resp = _mock_response(200, {"run_id": "abc", "plan_key": "plans/abc.yaml", "strategy": "intra_node"})
+    resp = _mock_response(200, {"run_id": "abc", "plan_key": "plans/smoke", "strategy": "intra_node"})
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import submit_run
-        result = await submit_run("plan_yaml: true", "test-label")
+        result = await submit_run("plan_yaml: true", "smoke", "test-label")
     assert result["run_id"] == "abc"
 
 
@@ -86,7 +89,7 @@ async def test_submit_run_raises_on_422():
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import submit_run
         with pytest.raises(CrucibleError) as exc_info:
-            await submit_run("bad", "label")
+            await submit_run("bad", "name")
         assert exc_info.value.status_code == 422
         assert "InvalidParams" in exc_info.value.detail
 
@@ -171,6 +174,30 @@ async def test_get_run_artifacts():
         from crucible_mcp.client import get_run_artifacts
         result = await get_run_artifacts("r1")
     assert len(result["artifacts"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# upload_plan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upload_plan_returns_key():
+    resp = _mock_response(200, {"key": "plans/my-plan"})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import upload_plan
+        result = await upload_plan("my-plan", {"test_metadata": {"run_label": "my-plan"}})
+    assert result["key"] == "plans/my-plan"
+
+
+@pytest.mark.asyncio
+async def test_upload_plan_raises_on_422():
+    detail = [{"loc": ["body", "test_metadata"], "msg": "field required"}]
+    resp = _mock_response(422, {"detail": detail})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import upload_plan
+        with pytest.raises(CrucibleError) as exc_info:
+            await upload_plan("name", {"bad": "data"})
+        assert exc_info.value.status_code == 422
 
 
 # ---------------------------------------------------------------------------

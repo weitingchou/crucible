@@ -36,9 +36,12 @@ async def get_sut_inventory() -> dict:
         return resp.json()
 
 
-async def submit_run(plan_yaml: str, label: str) -> dict:
+async def submit_run(plan_yaml: str, plan_name: str, label: str = "") -> dict:
     async with _client() as c:
-        resp = await c.post("/v1/test-runs", json={"plan_yaml": plan_yaml, "label": label})
+        resp = await c.post(
+            "/v1/test-runs",
+            json={"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label},
+        )
         raise_for_response(resp)
         return resp.json()
 
@@ -81,6 +84,13 @@ async def get_recent_stats() -> dict:
 async def get_run_artifacts(run_id: str) -> dict:
     async with _client() as c:
         resp = await c.get(f"/v1/test-runs/{run_id}/artifacts")
+        raise_for_response(resp)
+        return resp.json()
+
+
+async def upload_plan(name: str, plan_dict: dict) -> dict:
+    async with _client() as c:
+        resp = await c.put(f"/test-plans/{name}", json=plan_dict)
         raise_for_response(resp)
         return resp.json()
 

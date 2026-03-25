@@ -31,6 +31,7 @@ VALID_PLAN = {
 }
 
 SAVE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.save_plan"
+PLAN_EXISTS_PATH = "control_plane.routers.test_plans.s3_broker.plan_exists"
 LIST_PLANS_PATH = "control_plane.routers.test_plans.s3_broker.list_plans"
 GET_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.get_plan"
 DELETE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.delete_plan"
@@ -38,9 +39,11 @@ DELETE_PLAN_PATH = "control_plane.routers.test_plans.s3_broker.delete_plan"
 
 @pytest.fixture
 def mock_save_plan():
-    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m:
-        m.return_value = {"key": "plans/smoke-test"}
-        yield m
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save, \
+         patch(PLAN_EXISTS_PATH, new_callable=AsyncMock) as m_exists:
+        m_save.return_value = {"key": "plans/smoke-test"}
+        m_exists.return_value = False
+        yield m_save
 
 
 # ---------------------------------------------------------------------------
@@ -48,23 +51,30 @@ def mock_save_plan():
 # ---------------------------------------------------------------------------
 
 def test_create_plan_returns_201(mock_save_plan):
-    response = client.post("/test-plans", json=VALID_PLAN)
+    response = client.post("/test-plans?name=smoke-test", json=VALID_PLAN)
     assert response.status_code == 201
 
 
 def test_create_plan_returns_s3_key(mock_save_plan):
-    response = client.post("/test-plans", json=VALID_PLAN)
+    response = client.post("/test-plans?name=smoke-test", json=VALID_PLAN)
     assert response.json() == {"key": "plans/smoke-test"}
 
 
 def test_create_plan_calls_save_plan_with_correct_name(mock_save_plan):
-    client.post("/test-plans", json=VALID_PLAN)
+    client.post("/test-plans?name=smoke-test", json=VALID_PLAN)
     name_arg = mock_save_plan.call_args[0][0]
     assert name_arg == "smoke-test"
 
 
+def test_create_plan_name_is_independent_of_run_label(mock_save_plan):
+    """The plan name comes from the query param, not test_metadata.run_label."""
+    client.post("/test-plans?name=my-custom-name", json=VALID_PLAN)
+    name_arg = mock_save_plan.call_args[0][0]
+    assert name_arg == "my-custom-name"
+
+
 def test_create_plan_saves_valid_yaml(mock_save_plan):
-    client.post("/test-plans", json=VALID_PLAN)
+    client.post("/test-plans?name=smoke-test", json=VALID_PLAN)
     content_arg = mock_save_plan.call_args[0][1]
     parsed = yaml.safe_load(content_arg)
     assert parsed["test_metadata"]["run_label"] == "smoke-test"
@@ -73,20 +83,34 @@ def test_create_plan_saves_valid_yaml(mock_save_plan):
 
 def test_create_plan_rejects_missing_required_field():
     bad = {k: v for k, v in VALID_PLAN.items() if k != "execution"}
-    response = client.post("/test-plans", json=bad)
+    response = client.post("/test-plans?name=bad", json=bad)
     assert response.status_code == 422
 
 
 def test_create_plan_rejects_invalid_executor():
     bad = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "executor": "unknown"}}
-    response = client.post("/test-plans", json=bad)
+    response = client.post("/test-plans?name=bad", json=bad)
     assert response.status_code == 422
 
 
 def test_create_plan_rejects_zero_concurrency():
     bad = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "concurrency": 0}}
-    response = client.post("/test-plans", json=bad)
+    response = client.post("/test-plans?name=bad", json=bad)
     assert response.status_code == 422
+
+
+def test_create_plan_rejects_missing_name_param():
+    response = client.post("/test-plans", json=VALID_PLAN)
+    assert response.status_code == 422
+
+
+def test_create_plan_returns_409_when_plan_exists():
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save, \
+         patch(PLAN_EXISTS_PATH, new_callable=AsyncMock) as m_exists:
+        m_exists.return_value = True
+        response = client.post("/test-plans?name=smoke-test", json=VALID_PLAN)
+    assert response.status_code == 409
+    m_save.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +156,57 @@ def test_upload_plan_rejects_invalid_yaml():
 def test_upload_plan_rejects_yaml_failing_schema_validation():
     bad_plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "concurrency": 0}}
     response = client.post("/test-plans/upload", files=_yaml_file(bad_plan))
+    assert response.status_code == 422
+
+
+def test_upload_plan_returns_409_when_plan_exists():
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save, \
+         patch(PLAN_EXISTS_PATH, new_callable=AsyncMock) as m_exists:
+        m_exists.return_value = True
+        response = client.post("/test-plans/upload", files=_yaml_file(VALID_PLAN))
+    assert response.status_code == 409
+    m_save.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# PUT /test-plans/{name}  (JSON body — unconditional upsert)
+# ---------------------------------------------------------------------------
+
+def test_put_plan_returns_200():
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save:
+        m_save.return_value = {"key": "plans/smoke-test"}
+        response = client.put("/test-plans/smoke-test", json=VALID_PLAN)
+    assert response.status_code == 200
+    assert response.json() == {"key": "plans/smoke-test"}
+
+
+def test_put_plan_uses_url_name():
+    """save_plan should be called with the URL name, not the body label."""
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save:
+        m_save.return_value = {"key": "plans/url-name"}
+        client.put("/test-plans/url-name", json=VALID_PLAN)
+    name_arg = m_save.call_args[0][0]
+    assert name_arg == "url-name"
+
+
+# ---------------------------------------------------------------------------
+# PUT /test-plans/{name}/upload  (YAML file — unconditional upsert)
+# ---------------------------------------------------------------------------
+
+def test_put_upload_plan_returns_200():
+    with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save:
+        m_save.return_value = {"key": "plans/smoke-test"}
+        response = client.put("/test-plans/smoke-test/upload", files=_yaml_file(VALID_PLAN))
+    assert response.status_code == 200
+    assert response.json() == {"key": "plans/smoke-test"}
+
+
+def test_put_upload_rejects_invalid_yaml():
+    bad_bytes = b"name: [\nunclosed bracket"
+    response = client.put(
+        "/test-plans/smoke-test/upload",
+        files={"file": ("bad.yaml", io.BytesIO(bad_bytes), "application/yaml")},
+    )
     assert response.status_code == 422
 
 

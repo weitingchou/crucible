@@ -12,9 +12,11 @@ Claude should implement the following tools within the MCP server:
 - list_supported_suts: Returns a list of supported System Under Test types (Doris, Trino, Cassandra).
 - get_db_inventory: Lists currently available/leased database instances from the Metadata Store.
 - validate_test_plan: Validates a YAML string against the V1 Locked Schema.
-- submit_test_run: Submits the plan to the Dispatcher. Returns a run_id.
+- upload_test_plan: Validates and uploads a test plan to S3 via PUT (upsert) without starting a run. Plans are first-class objects that can be reused across multiple runs.
+- submit_test_run: Validates, uploads the plan under a stable name (upsert), and dispatches a test run. Requires `plan_name` (stable identity for S3 key and run_id prefix) and optional `label` (free-form display label). Returns a human-readable run_id in the format `{plan_name}_{YYYYMMDD-HHmm}_{8hex}`.
 - monitor_test_progress: Returns real-time status: "Waiting Room," "Executing," or "Completed."
 - emergency_stop: Triggers the SIGTERM -> SIGKILL escalation flow to kill worker processes.
+- upload_workload_sql: Validates and uploads an annotated SQL/CQL workload file to S3.
 
 4. Resource Definitions (Context)
 Resources allow Claude to "read" the state of Crucible:
@@ -62,9 +64,9 @@ async def list_supported_suts() -> List[str]:
         return response.json()
 
 @mcp.tool()
-async def submit_test_run(plan_yaml: str, label: str = "ai-generated-test") -> str:
+async def submit_test_run(plan_yaml: str, plan_name: str, label: str = "") -> str:
     """Submits a YAML test plan to the Dispatcher. Returns run_id."""
-    payload = {"plan": plan_yaml, "label": label}
+    payload = {"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label}
     headers = {"Authorization": f"Bearer {API_TOKEN}"}
     async with httpx.AsyncClient() as client:
         response = await client.post(

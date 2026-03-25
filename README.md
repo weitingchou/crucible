@@ -37,7 +37,7 @@
            │ MCP (stdio / SSE)
 ┌──────────▼──────────────────────────────────────────────┐
 │  MCP Server (FastMCP · port 8001)                       │
-│  • 6 tools: validate, submit, monitor, stop, SUT ops    │
+│  • 8 tools: validate, upload plan, submit, monitor, etc │
 │  • 3 resources: fixtures, telemetry, logs               │
 │  • Bearer auth middleware (SSE mode)                    │
 └──────────┬──────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ crucible/
 ├── control_plane/          # FastAPI service
 │   ├── src/control_plane/
 │   │   ├── main.py
-│   │   ├── routers/        # fixtures, test_runs, sut, test_runs_v1, telemetry
+│   │   ├── routers/        # test_plans, test_runs, test_runs_v1, fixtures, sut, telemetry
 │   │   └── services/       # dispatcher, s3_broker, db (asyncpg)
 │   ├── tests/
 │   ├── pyproject.toml
@@ -74,7 +74,7 @@ crucible/
 ├── mcp_server/             # MCP server (FastMCP)
 │   ├── src/crucible_mcp/
 │   │   ├── server.py       # Entrypoint (stdio / SSE)
-│   │   ├── tools.py        # 6 MCP tools
+│   │   ├── tools.py        # 8 MCP tools
 │   │   ├── resources.py    # 3 MCP resources
 │   │   ├── client.py       # HTTP client for Control Plane
 │   │   ├── errors.py       # HTTP → MCP error mapping
@@ -228,12 +228,19 @@ execution:
     - workload_id: my-workload-001
 ```
 
-Upload it:
+Upload it (POST creates, fails with 409 if the plan already exists):
 
 ```bash
 curl -X POST http://localhost:8000/test-plans/upload \
   -F "file=@doris-smoke-test.yaml"
 # {"key": "plans/doris-smoke-test"}
+```
+
+To replace an existing plan, use PUT:
+
+```bash
+curl -X PUT http://localhost:8000/test-plans/doris-smoke-test/upload \
+  -F "file=@doris-smoke-test.yaml"
 ```
 
 **Step 2 — Upload a fixture dataset (for files > 5 GB, use multipart)**
@@ -251,12 +258,22 @@ curl -X PUT "<presigned_url>" --upload-file sales_part1.parquet
 
 **Step 3 — Trigger a test run**
 
-Pass the S3 key returned in Step 1:
+Trigger by plan name (the plan must already be uploaded):
 
 ```bash
-curl -X POST http://localhost:8000/test-runs/doris-smoke-test
-# {"run_id": "...", "strategy": "distributed_vertical"}
+curl -X POST http://localhost:8000/v1/test-runs/doris-smoke-test
+# {"run_id": "doris-smoke-test_20260325-1207_a1b2c3d4", "plan_key": "plans/doris-smoke-test", "strategy": "intra_node"}
 ```
+
+Or use the combined upload + run shortcut (upserts the plan, then dispatches):
+
+```bash
+curl -X POST http://localhost:8000/v1/test-runs \
+  -H "Content-Type: application/json" \
+  -d '{"plan_yaml": "...", "plan_name": "doris-smoke-test"}'
+```
+
+You can trigger multiple runs against the same plan — each gets a unique `run_id` in the format `{plan_name}_{YYYYMMDD-HHmm}_{8-hex}`.
 
 ### SQL workload file format
 
@@ -304,9 +321,11 @@ The MCP server exposes Crucible's capabilities to AI agents via the [Model Conte
 | `list_supported_suts` | Returns supported database engine types (doris, trino, cassandra) |
 | `get_db_inventory` | Lists SUT instances held by active test runs |
 | `validate_test_plan` | Validates a YAML test plan locally (no network call) |
+| `upload_test_plan` | Validates and uploads a test plan without starting a run (PUT upsert) |
 | `submit_test_run` | Validates, auto-injects Prometheus URL, and submits a test run |
 | `monitor_test_progress` | Returns real-time lifecycle status of a test run |
 | `emergency_stop` | Sends SIGTERM → SIGKILL escalation to stop a running test |
+| `upload_workload_sql` | Validates and uploads an annotated SQL/CQL workload file |
 
 ### Resources
 
@@ -447,10 +466,10 @@ Allocate at least **8 GB RAM** to Docker Desktop (Settings → Resources → Mem
 ### Run the TPC-H e2e test plan
 
 ```bash
-# Upload the test plan
-curl -X POST http://localhost:8000/test-plans/upload \
+# Upload the test plan (use PUT to create or replace)
+curl -X PUT http://localhost:8000/test-plans/tpch-doris/upload \
   -F "file=@tests/plans/tpch_doris.yaml"
 
-# Trigger the test run
-curl -X POST http://localhost:8000/test-runs/tpch_doris
+# Trigger a test run against the uploaded plan
+curl -X POST http://localhost:8000/v1/test-runs/tpch-doris
 ```

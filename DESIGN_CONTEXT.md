@@ -18,6 +18,7 @@
 
 ### 1.3 "Zero-Config" Test Plan Management
 * **Intent-Based Configuration:** Users must be able to upload YAML configurations specifying only their testing intent (e.g., concurrency, duration, target database). Environment-specific endpoints and credentials must be silently injected at runtime.
+* **Plan-as-First-Class-Object:** Test plans are persistent, named objects stored under stable S3 keys (e.g., `plans/{plan_name}`). Plan names are unique — `POST` rejects duplicates (409), `PUT` upserts. Plans are decoupled from runs so that users can trigger multiple test runs against the same plan without re-uploading. Run IDs follow the format `{plan_name}_{YYYYMMDD-HHmm}_{8-hex-UUID}`, making them human-readable and tied back to their source plan.
 * **Infrastructure Leasing:** A mechanism to securely lock shared databases (via a metadata store) and communicate with a control plane to dynamically provision or attach to testing environments.
 
 ### 1.4 Data-Testing-as-a-Service (No-Code Workloads)
@@ -384,7 +385,7 @@ The Test Plan schema strictly separates user-managed environments (`cluster_info
 | Field Path | Type | Required | Description |
 | :--- | :--- | :---: | :--- |
 | **`test_metadata`** | Object | Yes | **Root block for test identification.** |
-| `test_metadata.run_label` | String | Yes | Human-readable ID for the test run (e.g., "Local_Doris_Test"). |
+| `test_metadata.run_label` | String | Yes | Human-readable label for the test run (e.g., "Local_Doris_Test"). This is a display label only — the plan's S3 identity (`plans/{plan_name}`) is determined by the caller (filename, URL path, or explicit `name`/`plan_name` parameter). |
 | **`test_environment`** | Object | Yes | **Root block for database targeting.** |
 | `test_environment.env_type` | String | Yes | Enum: `long-lived` (shared) or `disposable` (ephemeral). |
 | `test_environment.component_spec` | Object | Yes | Defines the target engine topology. |
