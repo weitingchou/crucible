@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .models import HealthResponse
-from .routers import fixtures, test_plans, test_runs, sut, test_runs_v1, telemetry
+from .routers import fixtures, test_plans, test_runs, sut, test_runs_v1, telemetry, workloads
 from .services import db
 
 _DESCRIPTION = """
@@ -28,6 +28,10 @@ datasets, and dispatches load-test jobs to the Celery worker fleet.
 """
 
 _TAGS_METADATA = [
+    {
+        "name": "workloads",
+        "description": "Upload and manage annotated workload files (SQL, CQL, etc.) stored in S3.",
+    },
     {
         "name": "test-plans",
         "description": "Create, upload, list, and retrieve YAML test plan documents stored in S3.",
@@ -69,6 +73,7 @@ app.include_router(test_plans.router)
 app.include_router(sut.router)
 app.include_router(test_runs_v1.router)
 app.include_router(telemetry.router)
+app.include_router(workloads.router)
 
 
 @app.get("/health", tags=["ops"])

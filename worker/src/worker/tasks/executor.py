@@ -3,6 +3,7 @@ import time
 
 import boto3
 
+from crucible_lib.schemas.workload import validate_workload
 from worker.celery_app import app
 from worker.config import settings
 from worker.db import (
@@ -94,14 +95,22 @@ def _s3_client():
 
 
 def _download_sql_fixtures(workloads: list[dict]) -> list[str]:
-    """Download annotated SQL workload files from S3, return local paths."""
+    """Download annotated workload files from S3, validate, and return local paths."""
     s3 = _s3_client()
     paths = []
     for w in workloads:
         workload_id = w["workload_id"]
-        s3_key = f"workloads/{workload_id.replace('-', '_')}.sql"
-        local_path = f"/tmp/{workload_id}.sql"
+        s3_key = f"workloads/{workload_id}"
+        local_path = f"/tmp/{workload_id}"
         s3.download_file(settings.s3_bucket, s3_key, local_path)
+        with open(local_path) as f:
+            content = f.read()
+        errors = validate_workload(content)
+        if errors:
+            raise ValueError(
+                f"Workload '{workload_id}' failed validation:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
         paths.append(local_path)
     return paths
 

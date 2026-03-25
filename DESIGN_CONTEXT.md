@@ -323,6 +323,57 @@ By bypassing Taurus and running k6 directly via the OS, we ensure that the custo
 * Real-time Metrics: The worker executes k6 with the `--out experimental-prometheus-rw` flag, streaming the custom `Trend` metrics directly into Prometheus.
 * Artifact Archival: The worker also uses `--out csv=/tmp/k6_raw.csv` to generate a raw backup of every data point, which the Celery worker uploads directly to the S3 artifact bucket during the teardown phase.
 
+### 5.4 Workload File Format
+
+Workload files use a plain-text annotation format that is query-language agnostic (SQL, CQL, etc.). The format is validated by `crucible-lib` — both the control plane (on upload via `POST /v1/workloads`) and the worker (after download, before execution) call `validate_workload()` from the shared library.
+
+**Header** — the first non-blank line must declare the workload type:
+
+```
+-- @type: sql
+```
+
+Supported types: `sql`, `cql`. The type value must be non-empty.
+
+**Query blocks** — each query is preceded by a `-- @name:` annotation. Query names must match `^[A-Za-z_][A-Za-z0-9_]*$`, be unique within the file, and have a non-empty body.
+
+**Example (SQL):**
+
+```sql
+-- @type: sql
+
+-- @name: TopSellingProducts
+SELECT product_id, SUM(revenue) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+
+-- @name: DailyActiveUsers
+SELECT DATE(created_at), COUNT(DISTINCT user_id) FROM events GROUP BY 1;
+```
+
+**Example (CQL):**
+
+```
+-- @type: cql
+
+-- @name: GetUserProfile
+SELECT * FROM users WHERE user_id = ?;
+
+-- @name: GetRecentOrders
+SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 20;
+```
+
+**Validation rules (enforced in `crucible_lib.schemas.workload`):**
+
+| Rule | Detail |
+| :--- | :--- |
+| `-- @type:` header required | Must be the first non-blank line. |
+| Type value non-empty | The value after `@type:` must not be blank. |
+| At least one `-- @name:` block | Files with no named queries are rejected. |
+| Unique query names | Duplicate names within a file are an error. |
+| Valid name format | Names must match `^[A-Za-z_][A-Za-z0-9_]*$`. |
+| Non-empty query bodies | Each named block must contain at least one non-whitespace line. |
+
+Workload files are uploaded via **`POST /v1/workloads`** and stored in S3 at `workloads/{workload_id}` (no file extension). The workload type is carried inside the file via the `-- @type:` header rather than the S3 key, so users reference workloads in the test plan using only the `workload_id`.
+
 ## 6. Test Plan YAML Specification (V1 Locked)
 
 ### 6.1 Schema Philosophy
@@ -350,8 +401,8 @@ The Test Plan schema strictly separates user-managed environments (`cluster_info
 | `execution.concurrency` | Integer | Yes | Number of VUs. |
 | `execution.ramp_up` | String | Yes | Duration (e.g., `30s`). |
 | `execution.hold_for` | String | Yes | Duration (e.g., `2m`). |
-| `execution.workload` | Array | Yes | List of query sets. |
-| `workload[].workload_id` | String | Yes | S3 ID for the annotated `.sql` file. |
+| `execution.workload` | Array | Yes | List of workload references. |
+| `workload[].workload_id` | String | Yes | Identifier of the uploaded workload file (see §5.4). Stored in S3 at `workloads/{workload_id}`. |
 
 ### 6.3 Valid YAML Example
 ```yaml

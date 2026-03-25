@@ -1,4 +1,4 @@
-"""Tests for crucible_mcp.tools — all 6 MCP tools."""
+"""Tests for crucible_mcp.tools — all 7 MCP tools."""
 
 import pytest
 import yaml
@@ -270,3 +270,56 @@ async def test_emergency_stop_catches_error(mcp_app):
         mock.side_effect = CrucibleError(500, "Internal error")
         result = await fn("r1")
     assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# upload_workload_sql
+# ---------------------------------------------------------------------------
+
+_VALID_WORKLOAD = """\
+-- @type: sql
+-- @name: TopProducts
+SELECT product_id, SUM(revenue) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+
+-- @name: DailyUsers
+SELECT DATE(created_at), COUNT(DISTINCT user_id) FROM events GROUP BY 1;
+"""
+
+
+@pytest.mark.asyncio
+async def test_upload_workload_succeeds(mcp_app):
+    fn = _get_tool(mcp_app, "upload_workload_sql")
+    with patch("crucible_mcp.tools.client.upload_workload", new_callable=AsyncMock) as mock:
+        mock.return_value = {"workload_id": "wl-1", "s3_key": "workloads/wl-1.sql"}
+        result = await fn("wl-1", _VALID_WORKLOAD)
+    assert result["success"] is True
+    assert result["workload_id"] == "wl-1"
+    assert result["s3_key"] == "workloads/wl-1.sql"
+
+
+@pytest.mark.asyncio
+async def test_upload_workload_invalid_content_returns_errors(mcp_app):
+    fn = _get_tool(mcp_app, "upload_workload_sql")
+    bad_content = "-- @name: Q1\nSELECT 1;"  # missing @type header
+    result = await fn("wl-1", bad_content)
+    assert result["success"] is False
+    assert "errors" in result
+    assert len(result["errors"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_upload_workload_does_not_call_api_on_invalid(mcp_app):
+    fn = _get_tool(mcp_app, "upload_workload_sql")
+    with patch("crucible_mcp.tools.client.upload_workload", new_callable=AsyncMock) as mock:
+        await fn("wl-1", "bad content no type header")
+    mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_workload_catches_crucible_error(mcp_app):
+    fn = _get_tool(mcp_app, "upload_workload_sql")
+    with patch("crucible_mcp.tools.client.upload_workload", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "S3 unavailable")
+        result = await fn("wl-1", _VALID_WORKLOAD)
+    assert result["success"] is False
+    assert "S3 unavailable" in result["error"]

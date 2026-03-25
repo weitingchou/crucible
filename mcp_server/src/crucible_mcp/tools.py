@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
 from crucible_lib.schemas.test_plan import TestPlan
+from crucible_lib.schemas.workload import validate_workload
 
 from . import client
 from .config import settings
@@ -101,3 +102,35 @@ def register_tools(mcp: FastMCP) -> None:
             return await client.stop_run(run_id)
         except CrucibleError as exc:
             return {"error": exc.detail}
+
+    @mcp.tool()
+    async def upload_workload_sql(workload_id: str, content: str) -> dict:
+        """Validates and uploads a workload file to Crucible.
+
+        The workload file must begin with a ``-- @type: <type>`` header (e.g.
+        ``-- @type: sql`` or ``-- @type: cql``) followed by one or more
+        ``-- @name: <QueryName>`` annotated query blocks.
+
+        Example content::
+
+            -- @type: sql
+            -- @name: TopProducts
+            SELECT product_id, SUM(revenue) FROM orders GROUP BY 1 LIMIT 10;
+
+            -- @name: DailyUsers
+            SELECT DATE(created_at), COUNT(DISTINCT user_id) FROM events GROUP BY 1;
+
+        The ``workload_id`` is the identifier used in the test plan's
+        ``execution.workload[].workload_id`` field.
+
+        Returns ``{"success": true, "workload_id": ..., "s3_key": ...}`` on success.
+        """
+        errors = validate_workload(content)
+        if errors:
+            return {"success": False, "errors": errors}
+
+        try:
+            result = await client.upload_workload(workload_id, content)
+        except CrucibleError as exc:
+            return {"success": False, "error": exc.detail}
+        return {"success": True, **result}

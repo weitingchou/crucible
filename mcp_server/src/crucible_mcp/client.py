@@ -83,3 +83,13 @@ async def get_run_artifacts(run_id: str) -> dict:
         resp = await c.get(f"/v1/test-runs/{run_id}/artifacts")
         raise_for_response(resp)
         return resp.json()
+
+
+async def upload_workload(workload_id: str, content: str) -> dict:
+    async with _client() as c:
+        resp = await c.post(
+            "/v1/workloads",
+            json={"workload_id": workload_id, "content": content},
+        )
+        raise_for_response(resp)
+        return resp.json()
