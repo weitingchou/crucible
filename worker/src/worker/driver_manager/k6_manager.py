@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 
+from crucible_lib.net import parse_host
 from worker.config import settings
 
 
@@ -24,7 +25,7 @@ def spawn_k6(
             (e.g. ``DOWNLOADED_SQL_PATH``).
     """
     cluster_info = plan["test_environment"]["component_spec"]["cluster_info"]
-    db_host, db_port = _parse_host(cluster_info["host"])
+    db_host, db_port = parse_host(cluster_info["host"], cluster_info.get("port"))
 
     env = os.environ.copy()
     env["K6_PROMETHEUS_RW_SERVER_URL"] = settings.prometheus_rw_url
@@ -56,12 +57,6 @@ def spawn_k6(
         settings.sql_driver_path,
     ]
     return subprocess.Popen(cmd, env=env)
-
-
-def _parse_host(host_str: str) -> tuple[str, int]:
-    """Split 'hostname:port' into (hostname, port)."""
-    host, _, port_str = host_str.rpartition(":")
-    return host, int(port_str)
 
 
 def wait_and_teardown(processes: list[subprocess.Popen], timeout: int) -> None:

@@ -1,5 +1,7 @@
 import pymysql
 
+from crucible_lib.net import parse_host
+
 from . import FixtureStrategy
 
 
@@ -15,7 +17,7 @@ class ZeroDownloadStrategy(FixtureStrategy):
     """
 
     def init(self, config: dict) -> None:
-        host, port = _parse_host(config["host"])
+        host, port = parse_host(config["host"], config.get("port"))
         conn = pymysql.connect(
             host=host, port=port,
             user=config["username"], password=config["password"],
@@ -28,7 +30,7 @@ class ZeroDownloadStrategy(FixtureStrategy):
             conn.close()
 
     def load(self, s3_uris: list[str], config: dict) -> None:
-        host, port = _parse_host(config["host"])
+        host, port = parse_host(config["host"], config.get("port"))
         conn = pymysql.connect(
             host=host,
             port=port,
@@ -65,11 +67,3 @@ class ZeroDownloadStrategy(FixtureStrategy):
             conn.commit()
         finally:
             conn.close()
-
-
-def _parse_host(host_str: str) -> tuple[str, int]:
-    """Split 'hostname:port' into (hostname, port). Defaults to 9030 if omitted."""
-    if ":" in host_str:
-        host, _, port_str = host_str.rpartition(":")
-        return host, int(port_str)
-    return host_str, 9030
