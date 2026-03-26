@@ -107,7 +107,7 @@ from my_app.tasks import k6_executor_task
 @shared_task(bind=True)
 def dispatcher_task(self, plan: dict, run_id: str):
     mode = plan["execution"].get("scaling_mode", "intra_node")
-    cluster_size = plan["test_environment"]["cluster_spec"]["backend_node"].get("count", 1)
+    cluster_size = plan["test_environment"]["cluster_spec"]["backend_node"].get("replica", 1)
 
     # ---------------------------------------------------------
     # BRANCH A: Vertical Scaling (Single Node, Multi-Process)

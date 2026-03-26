@@ -16,7 +16,9 @@ class NodeSpec(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    count: int = Field(default=1, gt=0)
+    replica: int = Field(default=1, gt=0)
+    cpu_per_node: int | None = Field(default=None, gt=0, description="vCores per node")
+    memory_per_node: int | None = Field(default=None, gt=0, description="GiB per node")
 
 
 class DorisClusterSpec(BaseModel):
@@ -40,5 +42,5 @@ ClusterSpec = Annotated[
 def get_cluster_size(spec: DorisClusterSpec) -> int:
     """Return the effective cluster size for fan-out decisions."""
     if spec.backend_node:
-        return spec.backend_node.count
+        return spec.backend_node.replica
     return 1

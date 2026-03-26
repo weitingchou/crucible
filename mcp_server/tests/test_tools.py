@@ -384,7 +384,7 @@ async def test_upload_workload_catches_crucible_error(mcp_app):
 @pytest.mark.asyncio
 async def test_submit_passes_cluster_spec_to_client(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
-    spec = {"type": "doris", "backend_node": {"count": 3}}
+    spec = {"type": "doris", "backend_node": {"replica": 3}}
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
         await fn(_VALID_PLAN_YAML, "smoke", "", spec)
@@ -411,7 +411,7 @@ async def test_trigger_run_by_plan_succeeds(mcp_app):
 @pytest.mark.asyncio
 async def test_trigger_run_by_plan_with_cluster_spec(mcp_app):
     fn = _get_tool(mcp_app, "trigger_run_by_plan")
-    spec = {"type": "doris", "backend_node": {"count": 5}}
+    spec = {"type": "doris", "backend_node": {"replica": 5}}
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r2", "plan_key": "plans/bench", "strategy": "intra_node"}
         result = await fn("bench", "5-be-run", spec)

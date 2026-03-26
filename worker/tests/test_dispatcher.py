@@ -52,13 +52,13 @@ def test_cluster_size_defaults_to_1_when_no_cluster_spec(mock_loader, mock_exec,
 @patch("worker.tasks.dispatcher.update_run_status")
 @patch("worker.tasks.dispatcher.k6_executor_task")
 @patch("worker.tasks.dispatcher.FixtureLoader")
-def test_cluster_size_from_backend_node_count(mock_loader, mock_exec, mock_status):
-    """cluster_spec with backend_node.count=4 → cluster_size=4."""
+def test_cluster_size_from_backend_node_replica(mock_loader, mock_exec, mock_status):
+    """cluster_spec with backend_node.replica=4 → cluster_size=4."""
     mock_loader.return_value.load.return_value = None
     mock_exec.delay.return_value = None
     mock_status.return_value = None
 
-    cluster_spec = {"type": "doris", "backend_node": {"count": 4}}
+    cluster_spec = {"type": "doris", "backend_node": {"replica": 4}}
     dispatcher_task.run(_make_plan(), "run-2", cluster_spec=cluster_spec)
 
     mock_exec.delay.assert_called_once()
@@ -75,7 +75,7 @@ def test_cluster_size_defaults_to_1_when_backend_node_absent(mock_loader, mock_e
     mock_exec.delay.return_value = None
     mock_status.return_value = None
 
-    cluster_spec = {"type": "doris", "frontend_node": {"count": 2}}
+    cluster_spec = {"type": "doris", "frontend_node": {"replica": 2}}
     dispatcher_task.run(_make_plan(), "run-3", cluster_spec=cluster_spec)
 
     _, kwargs = mock_exec.delay.call_args

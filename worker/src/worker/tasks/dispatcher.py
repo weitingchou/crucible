@@ -21,7 +21,7 @@ def dispatcher_task(
     """Validate capacity, hydrate the SUT, and fan out k6 executor tasks.
 
     *cluster_spec* is an optional runtime cluster topology provided at
-    run-submission time.  When present the ``backend_node.count`` value
+    run-submission time.  When present the ``backend_node.replica`` value
     drives the fan-out size; otherwise the default is 1.
 
     Branches on ``plan.execution.scaling_mode``:
@@ -34,7 +34,7 @@ def dispatcher_task(
     mode = plan["execution"].get("scaling_mode", "intra_node")
     if cluster_spec:
         backend = cluster_spec.get("backend_node") or {}
-        cluster_size = backend.get("count", 1)
+        cluster_size = backend.get("replica", 1)
     else:
         cluster_size = 1
 

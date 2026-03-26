@@ -229,7 +229,7 @@ async def test_trigger_run_returns_run_id():
 @pytest.mark.asyncio
 async def test_trigger_run_with_cluster_spec_posts_spec():
     resp = _mock_response(200, {"run_id": "r2", "plan_key": "plans/bench", "strategy": "intra_node"})
-    spec = {"type": "doris", "backend_node": {"count": 3}}
+    spec = {"type": "doris", "backend_node": {"replica": 3}}
     capturing = _CapturingClient(resp)
     with patch("crucible_mcp.client._client", return_value=capturing):
         from crucible_mcp.client import trigger_run

@@ -87,7 +87,7 @@ def register_tools(mcp: FastMCP) -> None:
         *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
         *cluster_spec* is an optional cluster topology dict (e.g.
-        ``{"type": "doris", "backend_node": {"count": 3}}``).  Required for
+        ``{"type": "doris", "backend_node": {"replica": 3}}``).  Required for
         disposable environment plans.
         Returns the run_id on success.
         """
@@ -122,7 +122,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         This is the primary way to re-run a test plan against different cluster
         configurations. Provide *cluster_spec* to specify the cluster topology
-        (e.g. ``{"type": "doris", "backend_node": {"count": 3}}``).
+        (e.g. ``{"type": "doris", "backend_node": {"replica": 3}}``).
         *cluster_spec* is required for disposable environment plans.
 
         *plan_name* identifies the previously uploaded plan.

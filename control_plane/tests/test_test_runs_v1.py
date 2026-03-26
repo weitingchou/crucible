@@ -59,8 +59,8 @@ _DISPOSABLE_PLAN_YAML = yaml.dump(_DISPOSABLE_PLAN)
 _DORIS_CLUSTER_SPEC = {
     "type": "doris",
     "version": "3.0",
-    "frontend_node": {"count": 1},
-    "backend_node": {"count": 3},
+    "frontend_node": {"replica": 1},
+    "backend_node": {"replica": 3},
 }
 
 
@@ -575,7 +575,7 @@ def test_submit_cluster_spec_passed_as_celery_third_arg():
 def test_get_status_includes_cluster_spec_in_response():
     """Run status response should include cluster_spec when present."""
     ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    spec = {"type": "doris", "backend_node": {"count": 3}}
+    spec = {"type": "doris", "backend_node": {"replica": 3}}
     with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock:
         mock.return_value = {
             "run_id": "r1", "status": "EXECUTING", "plan_name": "bench",
