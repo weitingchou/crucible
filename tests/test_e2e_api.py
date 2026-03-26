@@ -482,3 +482,233 @@ class TestRecentStats:
         body = resp.json()
         run_ids = [r["run_id"] for r in body["runs"]]
         assert self.run_id in run_ids
+
+
+# ===========================================================================
+# FAILURE PATH TESTS
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Submit validation failures
+# ---------------------------------------------------------------------------
+
+class TestSubmitValidationFailures:
+    """Submit endpoint rejects invalid inputs with 422."""
+
+    def test_submit_invalid_cluster_spec_unknown_type(self):
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": _load_plan_yaml(),
+            "plan_name": f"e2e-bad-spec-{_SESSION_TAG}",
+            "cluster_spec": {"type": "unknown_db"},
+        }, timeout=10)
+        assert resp.status_code == 422
+
+    def test_submit_invalid_cluster_spec_bad_replica(self):
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": _load_plan_yaml(),
+            "plan_name": f"e2e-bad-replica-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 0}},
+        }, timeout=10)
+        assert resp.status_code == 422
+
+    def test_submit_cluster_spec_type_mismatch(self):
+        """cluster_spec.type must match the plan's component_spec.type."""
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": _load_plan_yaml(),
+            "plan_name": f"e2e-mismatch-{_SESSION_TAG}",
+            "cluster_spec": {"type": "cassandra"},  # plan uses doris
+        }, timeout=10)
+        assert resp.status_code == 422
+        assert "does not match" in str(resp.json()["detail"])
+
+    def test_submit_disposable_plan_without_cluster_spec(self):
+        """Disposable plans require cluster_spec."""
+        import yaml
+        disposable_plan = {
+            "test_metadata": {"run_label": "bench"},
+            "test_environment": {
+                "env_type": "disposable",
+                "target_db": "tpch",
+                "component_spec": {"type": "doris"},
+                "fixtures": [],
+            },
+            "execution": {
+                "executor": "k6",
+                "scaling_mode": "intra_node",
+                "concurrency": 10,
+                "ramp_up": "30s",
+                "hold_for": "2m",
+                "workload": [],
+            },
+        }
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": yaml.dump(disposable_plan),
+            "plan_name": f"e2e-disposable-{_SESSION_TAG}",
+        }, timeout=10)
+        assert resp.status_code == 422
+        assert "cluster_spec is required" in str(resp.json()["detail"])
+
+    def test_submit_empty_cluster_spec(self):
+        """Empty dict {} is not a valid cluster_spec (missing 'type')."""
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": _load_plan_yaml(),
+            "plan_name": f"e2e-empty-spec-{_SESSION_TAG}",
+            "cluster_spec": {},
+        }, timeout=10)
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Trigger validation failures
+# ---------------------------------------------------------------------------
+
+class TestTriggerValidationFailures:
+    """Trigger endpoint rejects invalid inputs."""
+
+    @pytest.fixture(autouse=True)
+    def _upload_plan(self):
+        """Upload a plan to MinIO so trigger can find it."""
+        self.plan_name = f"e2e-trigger-fail-{_SESSION_TAG}"
+        self.plan_key = f"plans/{self.plan_name}"
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=self.plan_key,
+            Body=_load_plan_yaml().encode(),
+        )
+        yield
+        _cleanup_plan(self.plan_key)
+
+    def test_trigger_with_type_mismatch_cluster_spec(self):
+        resp = httpx.post(
+            f"{API_BASE}/v1/test-runs/{self.plan_name}",
+            json={"cluster_spec": {"type": "cassandra"}},
+            timeout=10,
+        )
+        assert resp.status_code == 422
+        assert "does not match" in str(resp.json()["detail"])
+
+    def test_trigger_with_invalid_cluster_spec(self):
+        resp = httpx.post(
+            f"{API_BASE}/v1/test-runs/{self.plan_name}",
+            json={"cluster_spec": {"type": "unknown_db"}},
+            timeout=10,
+        )
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# FAILED run status — error_detail visibility
+# ---------------------------------------------------------------------------
+
+class TestFailedRunStatus:
+    """Verify that FAILED runs expose error_detail through all read endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_failed_run(self):
+        self.run_id = f"e2e-failed-{_SESSION_TAG}"
+        self.error_msg = "k6 process failure:\ninstance 0 exited with code 1\n  stderr: ERRO connection refused"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, cluster_spec, cluster_settings, status,
+                error_detail, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                self.run_id, "task-fail", "e2e-plan", "plans/e2e-plan",
+                f"e2e-failed-{_SESSION_TAG}", "doris", "intra_node",
+                psycopg2.extras.Json({"type": "doris"}), "concurrency=10",
+                "FAILED", self.error_msg,
+            ),
+        )
+        yield
+        _cleanup_run(self.run_id)
+
+    def test_status_shows_error_detail(self):
+        resp = httpx.get(f"{API_BASE}/v1/test-runs/{self.run_id}/status", timeout=10)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "FAILED"
+        assert body["error_detail"] == self.error_msg
+        assert "connection refused" in body["error_detail"]
+        assert body["completed_at"] is not None
+
+    def test_list_shows_error_detail(self):
+        resp = httpx.get(
+            f"{API_BASE}/v1/test-runs",
+            params={"run_label": f"e2e-failed-{_SESSION_TAG}"},
+            timeout=10,
+        )
+        assert resp.status_code == 200
+        runs = resp.json()["runs"]
+        assert len(runs) == 1
+        run = runs[0]
+        assert run["status"] == "FAILED"
+        assert run["error_detail"] == self.error_msg
+
+    def test_stop_failed_run_returns_already_stopped(self):
+        resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.run_id}/stop", timeout=10)
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "already_stopped"
+
+
+# ---------------------------------------------------------------------------
+# COMPLETED run — stop is a no-op
+# ---------------------------------------------------------------------------
+
+class TestStopCompletedRun:
+
+    @pytest.fixture(autouse=True)
+    def _setup_completed_run(self):
+        self.run_id = f"e2e-completed-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                self.run_id, "task-done", "e2e-plan", "plans/e2e-plan",
+                "completed-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        yield
+        _cleanup_run(self.run_id)
+
+    def test_stop_completed_run_returns_already_stopped(self):
+        resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.run_id}/stop", timeout=10)
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "already_stopped"
+
+    def test_completed_run_status_unchanged_after_stop(self):
+        """Stop on a completed run should NOT change its status."""
+        httpx.post(f"{API_BASE}/v1/test-runs/{self.run_id}/stop", timeout=10)
+        rows = _pg_query("SELECT status FROM test_runs WHERE run_id = %s", (self.run_id,))
+        assert rows[0]["status"] == "COMPLETED"
+
+
+# ---------------------------------------------------------------------------
+# STOPPING run — stop is a no-op
+# ---------------------------------------------------------------------------
+
+class TestStopStoppingRun:
+
+    @pytest.fixture(autouse=True)
+    def _setup_stopping_run(self):
+        self.run_id = f"e2e-stopping-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                self.run_id, "task-stopping", "e2e-plan", "plans/e2e-plan",
+                "stopping-test", "doris", "intra_node", "STOPPING",
+            ),
+        )
+        yield
+        _cleanup_run(self.run_id)
+
+    def test_stop_stopping_run_returns_already_stopped(self):
+        resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.run_id}/stop", timeout=10)
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "already_stopped"
