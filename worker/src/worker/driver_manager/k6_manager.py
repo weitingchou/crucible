@@ -56,20 +56,36 @@ def spawn_k6(
         "--out", f"csv=/tmp/k6_raw_{run_id}_{instance_index}.csv",
         settings.sql_driver_path,
     ]
-    return subprocess.Popen(cmd, env=env)
+    return subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
 
 
-def wait_and_teardown(processes: list[subprocess.Popen], timeout: int) -> None:
+class K6Result:
+    """Result of a single k6 process execution."""
+
+    __slots__ = ("returncode", "stderr", "timed_out")
+
+    def __init__(self, returncode: int, stderr: str, timed_out: bool):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def wait_and_teardown(processes: list[subprocess.Popen], timeout: int) -> list[K6Result]:
     """Wait for all k6 processes; escalate SIGTERM → SIGKILL on hang.
 
     Args:
         processes: List of running k6 Popen handles.
         timeout: Seconds to wait before sending SIGTERM.
+
+    Returns:
+        List of :class:`K6Result`, one per process.
     """
+    timed_out = False
     try:
         for p in processes:
             p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
         for p in processes:
             p.send_signal(signal.SIGTERM)
         try:
@@ -78,3 +94,16 @@ def wait_and_teardown(processes: list[subprocess.Popen], timeout: int) -> None:
         except subprocess.TimeoutExpired:
             for p in processes:
                 p.kill()
+            for p in processes:
+                p.wait()
+
+    results = []
+    for p in processes:
+        stderr = ""
+        if p.stderr:
+            try:
+                stderr = p.stderr.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                pass
+        results.append(K6Result(returncode=p.returncode, stderr=stderr, timed_out=timed_out))
+    return results

@@ -120,3 +120,27 @@ def test_cluster_spec_none_and_inter_node_uses_size_1(mock_loader, mock_exec, mo
 
     # cluster_size=1: one executor task dispatched
     assert mock_exec.delay.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Error handling — dispatcher catches exceptions and marks run as FAILED
+# ---------------------------------------------------------------------------
+
+@patch("worker.tasks.dispatcher.update_run_status")
+@patch("worker.tasks.dispatcher.k6_executor_task")
+@patch("worker.tasks.dispatcher.FixtureLoader")
+def test_fixture_loader_failure_marks_run_as_failed(mock_loader, mock_exec, mock_status):
+    """FixtureLoader.load() raises → run transitions to FAILED with error_detail."""
+    mock_loader.return_value.load.side_effect = RuntimeError("Connection refused")
+
+    with pytest.raises(RuntimeError):
+        dispatcher_task.run(_make_plan(), "run-err-1", cluster_spec=None)
+
+    # Should have been called with FAILED status and error detail
+    mock_status.assert_called_once()
+    call_args = mock_status.call_args
+    assert call_args[0][0] == "run-err-1"
+    assert call_args[0][1] == "FAILED"
+    assert "Fixture loading failed" in call_args[1]["error_detail"]
+    assert "Connection refused" in call_args[1]["error_detail"]
+    assert "RuntimeError" in call_args[1]["error_detail"]

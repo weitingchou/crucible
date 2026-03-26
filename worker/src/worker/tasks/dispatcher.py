@@ -39,7 +39,14 @@ def dispatcher_task(
         cluster_size = 1
 
     # ── 1. Hydrate the SUT once before fan-out ───────────────────────────────
-    FixtureLoader(plan).load()
+    try:
+        FixtureLoader(plan).load()
+    except Exception as exc:
+        update_run_status(
+            run_id, "FAILED",
+            error_detail=f"Fixture loading failed: {type(exc).__name__}: {exc}",
+        )
+        raise
 
     # ── 2a. Intra-node (vertical) ────────────────────────────────────────────
     if mode == "intra_node":

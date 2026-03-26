@@ -31,9 +31,18 @@ def k6_executor_task(
     5. Upload raw CSV artifacts to S3 and clean up local disk.
     """
     mode = plan["execution"].get("scaling_mode", "intra_node")
+    sql_paths: list[str] = []
 
     # ── 1. Download SQL workload files ───────────────────────────────────────
-    sql_paths = _download_sql_fixtures(plan["execution"]["workload"])
+    try:
+        sql_paths.extend(_download_sql_fixtures(plan["execution"]["workload"]))
+    except Exception as exc:
+        update_run_status(
+            run_id, "FAILED",
+            error_detail=f"Workload download failed: {type(exc).__name__}: {exc}",
+            set_completed_at=True,
+        )
+        raise
 
     # ── 2. Horizontal synchronization (inter-node only) ──────────────────────
     if mode == "inter_node":
@@ -50,27 +59,64 @@ def k6_executor_task(
     # ── 3. Spawn k6 process(es) ──────────────────────────────────────────────
     hold_for = plan["execution"].get("hold_for_seconds", 120)
     processes = []
-    for i in range(local_instances):
-        local_segment = _sub_segment(segment_flag, i, local_instances)
-        processes.append(
-            spawn_k6(
-                run_id,
-                local_segment,
-                i,
-                plan,
-                extra_env={"DOWNLOADED_SQL_PATH": sql_paths[0] if sql_paths else ""},
+    try:
+        for i in range(local_instances):
+            local_segment = _sub_segment(segment_flag, i, local_instances)
+            processes.append(
+                spawn_k6(
+                    run_id,
+                    local_segment,
+                    i,
+                    plan,
+                    extra_env={"DOWNLOADED_SQL_PATH": sql_paths[0] if sql_paths else ""},
+                )
             )
+    except Exception as exc:
+        # Kill any already-spawned processes
+        for p in processes:
+            p.kill()
+            p.wait()
+        _cleanup(sql_paths, run_id, local_instances)
+        update_run_status(
+            run_id, "FAILED",
+            error_detail=f"k6 spawn failed: {type(exc).__name__}: {exc}",
+            set_completed_at=True,
         )
+        raise
 
     # ── 4. Wait and tear down ────────────────────────────────────────────────
-    wait_and_teardown(processes, timeout=hold_for)
+    results = wait_and_teardown(processes, timeout=hold_for)
 
     # ── 5. Upload artifacts and clean up ─────────────────────────────────────
     for i in range(local_instances):
         _upload_to_s3(f"/tmp/k6_raw_{run_id}_{i}.csv", run_id, i)
     _cleanup(sql_paths, run_id, local_instances)
 
-    # ── 6. Mark completion ───────────────────────────────────────────────────
+    # ── 6. Check for k6 failures ─────────────────────────────────────────────
+    failed = [
+        (i, r) for i, r in enumerate(results) if r.returncode != 0
+    ]
+    if failed:
+        parts = []
+        for i, r in failed:
+            detail = f"instance {i} exited with code {r.returncode}"
+            if r.timed_out:
+                detail += " (timed out, killed)"
+            if r.stderr:
+                # Include last 500 chars of stderr for context
+                snippet = r.stderr[-500:] if len(r.stderr) > 500 else r.stderr
+                detail += f"\n  stderr: {snippet}"
+            parts.append(detail)
+        error_msg = "k6 process failure:\n" + "\n".join(parts)
+        if mode == "intra_node" or increment_completed_and_check(run_id):
+            update_run_status(
+                run_id, "FAILED",
+                error_detail=error_msg,
+                set_completed_at=True,
+            )
+        return {"status": "failed", "error": error_msg}
+
+    # ── 7. Mark completion ───────────────────────────────────────────────────
     # For inter-node mode, only the last executor to finish marks the run as
     # COMPLETED. For intra-node mode (single executor), always mark complete.
     if mode == "intra_node" or increment_completed_and_check(run_id):
