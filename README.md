@@ -323,6 +323,8 @@ The MCP server exposes Crucible's capabilities to AI agents via the [Model Conte
 | `validate_test_plan` | Validates a YAML test plan locally (no network call) |
 | `upload_test_plan` | Validates and uploads a test plan without starting a run (PUT upsert) |
 | `submit_test_run` | Validates, auto-injects Prometheus URL, and submits a test run |
+| `trigger_run_by_plan` | Triggers a new run using an existing plan (with optional cluster_spec/settings) |
+| `list_test_runs` | Lists test runs, optionally filtered by run_label |
 | `monitor_test_progress` | Returns real-time lifecycle status of a test run |
 | `emergency_stop` | Sends SIGTERM → SIGKILL escalation to stop a running test |
 | `upload_workload_sql` | Validates and uploads an annotated SQL/CQL workload file |
@@ -380,35 +382,40 @@ Add to your `claude_desktop_config.json`:
 
 ## 4. Testing the Project
 
-### Run all tests
+### Unit tests
 
-```bash
-uv run pytest control_plane/ mcp_server/tests/
-cd worker && uv run pytest
-```
-
-### Run tests for a specific package
+Run all unit tests (no infrastructure required):
 
 ```bash
 uv run pytest control_plane/          # Control plane (original + V1 routers)
 uv run pytest mcp_server/tests/       # MCP server (tools, resources, client, errors, auth)
 cd worker && uv run pytest            # Worker (shared DB module)
-uv run pytest lib/
+uv run pytest lib/                    # Shared library (schemas, utilities)
 ```
 
-### Run tests with verbose output
-
-```bash
-uv run pytest -v
-```
-
-### Run a specific test file or test case
+Run a specific test file or test case:
 
 ```bash
 uv run pytest mcp_server/tests/test_tools.py
 uv run pytest mcp_server/tests/test_tools.py::test_validate_valid_plan
-uv run pytest worker/tests/test_fixture_loader.py::test_zero_download_strategy
 ```
+
+### End-to-end tests
+
+E2e tests hit the real Control Plane API, PostgreSQL, and MinIO with no mocks. A setup script handles starting Docker services, applying the DB schema, and launching the control plane.
+
+```bash
+# Start the e2e environment (Docker + control plane)
+./tests/start_e2e_env.sh
+
+# Run the tests
+uv run python -m pytest tests/test_e2e_api.py -v
+
+# Tear down everything
+./tests/start_e2e_env.sh --stop
+```
+
+The tests auto-skip if the infrastructure is not running, so `uv run pytest tests/` is always safe to run.
 
 ### Type checking
 
