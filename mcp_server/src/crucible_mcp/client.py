@@ -36,12 +36,33 @@ async def get_sut_inventory() -> dict:
         return resp.json()
 
 
-async def submit_run(plan_yaml: str, plan_name: str, label: str = "") -> dict:
+async def submit_run(
+    plan_yaml: str,
+    plan_name: str,
+    label: str = "",
+    cluster_spec: dict | None = None,
+) -> dict:
+    payload: dict = {"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label}
+    if cluster_spec is not None:
+        payload["cluster_spec"] = cluster_spec
     async with _client() as c:
-        resp = await c.post(
-            "/v1/test-runs",
-            json={"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label},
-        )
+        resp = await c.post("/v1/test-runs", json=payload)
+        raise_for_response(resp)
+        return resp.json()
+
+
+async def trigger_run(
+    plan_name: str,
+    label: str = "",
+    cluster_spec: dict | None = None,
+) -> dict:
+    payload: dict = {}
+    if label:
+        payload["label"] = label
+    if cluster_spec is not None:
+        payload["cluster_spec"] = cluster_spec
+    async with _client() as c:
+        resp = await c.post(f"/v1/test-runs/{plan_name}", json=payload)
         raise_for_response(resp)
         return resp.json()
 

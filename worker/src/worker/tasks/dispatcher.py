@@ -15,8 +15,14 @@ from worker.tasks.executor import k6_executor_task
 
 
 @app.task(bind=True, name="worker.tasks.dispatcher.dispatcher_task")
-def dispatcher_task(self, plan: dict, run_id: str) -> dict:
+def dispatcher_task(
+    self, plan: dict, run_id: str, cluster_spec: dict | None = None
+) -> dict:
     """Validate capacity, hydrate the SUT, and fan out k6 executor tasks.
+
+    *cluster_spec* is an optional runtime cluster topology provided at
+    run-submission time.  When present the ``backend_node.count`` value
+    drives the fan-out size; otherwise the default is 1.
 
     Branches on ``plan.execution.scaling_mode``:
     - ``intra_node``: dispatches a single executor task instructed to spawn
@@ -26,13 +32,11 @@ def dispatcher_task(self, plan: dict, run_id: str) -> dict:
       the global START signal when all workers are ready.
     """
     mode = plan["execution"].get("scaling_mode", "intra_node")
-    cluster_size = (
-        plan["test_environment"]
-        .get("component_spec", {})
-        .get("cluster_spec", {})
-        .get("backend_node", {})
-        .get("count", 1)
-    )
+    if cluster_spec:
+        backend = cluster_spec.get("backend_node") or {}
+        cluster_size = backend.get("count", 1)
+    else:
+        cluster_size = 1
 
     # ── 1. Hydrate the SUT once before fan-out ───────────────────────────────
     FixtureLoader(plan).load()

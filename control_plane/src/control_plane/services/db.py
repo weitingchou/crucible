@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import asyncpg
 
 from ..config import settings
@@ -39,14 +41,17 @@ async def insert_run(
     run_label: str,
     sut_type: str,
     scaling_mode: str,
+    cluster_spec: dict | None = None,
 ) -> None:
     await _get_pool().execute(
         """
-        INSERT INTO test_runs (run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO test_runs
+            (run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode, cluster_spec)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (run_id) DO NOTHING
         """,
         run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode,
+        json.dumps(cluster_spec) if cluster_spec else None,
     )
 
 

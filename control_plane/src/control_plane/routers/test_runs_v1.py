@@ -11,8 +11,9 @@ import yaml
 from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import APIRouter, HTTPException
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from crucible_lib.schemas.cluster_spec import ClusterSpec
 from crucible_lib.schemas.test_plan import TestPlan
 
 from ..config import settings
@@ -23,10 +24,13 @@ from ..models import (
     StopRunResponse,
     SubmitRunRequest,
     SubmitRunResponse,
+    TriggerRunRequest,
     WaitingRoomInfo,
 )
 from ..services import db
 from ..utils import sanitize_plan_name
+
+_cluster_spec_adapter = TypeAdapter(ClusterSpec)
 
 router = APIRouter(prefix="/v1/test-runs", tags=["test-runs"])
 
@@ -53,6 +57,31 @@ def _generate_run_id(plan_name: str) -> str:
     return f"{plan_name}_{ts}_{short_uuid}"
 
 
+def _validate_cluster_spec(
+    cluster_spec_dict: dict | None,
+    plan: TestPlan,
+) -> None:
+    """Validate a runtime cluster_spec against the plan's component_spec."""
+    if cluster_spec_dict is not None:
+        try:
+            _cluster_spec_adapter.validate_python(cluster_spec_dict)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors())
+        if cluster_spec_dict["type"] != plan.test_environment.component_spec.type:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"cluster_spec.type '{cluster_spec_dict['type']}' does not match "
+                    f"component_spec.type '{plan.test_environment.component_spec.type}'"
+                ),
+            )
+    elif plan.test_environment.env_type == "disposable":
+        raise HTTPException(
+            status_code=422,
+            detail="cluster_spec is required for disposable environment plans.",
+        )
+
+
 @router.post("", summary="Submit a test run from raw YAML")
 async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
     """Validate a YAML test plan, upload it to S3 under a stable name,
@@ -65,6 +94,9 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
         raise HTTPException(status_code=422, detail=f"Invalid YAML: {exc}")
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors())
+
+    # Validate runtime cluster_spec
+    _validate_cluster_spec(body.cluster_spec, plan)
 
     # Derive stable plan identity
     plan_name = sanitize_plan_name(body.plan_name)
@@ -85,7 +117,7 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
     result = await asyncio.to_thread(
         _celery.send_task,
         "worker.tasks.dispatcher.dispatcher_task",
-        args=(raw, run_id),
+        args=(raw, run_id, body.cluster_spec),
     )
 
     # Record in PostgreSQL
@@ -98,6 +130,7 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
         run_label=body.label or body.plan_name,
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
+        cluster_spec=body.cluster_spec,
     )
 
     return SubmitRunResponse(
@@ -112,9 +145,16 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
     summary="Trigger a test run against an existing plan",
     responses={404: {"description": "Test plan not found in S3"}},
 )
-async def trigger_run_by_plan(plan_name: str) -> SubmitRunResponse:
+async def trigger_run_by_plan(
+    plan_name: str,
+    body: TriggerRunRequest | None = None,
+) -> SubmitRunResponse:
     """Fetch an already-uploaded plan from S3 by *plan_name*, dispatch a new
-    test run, and record it in PostgreSQL."""
+    test run, and record it in PostgreSQL.
+
+    Provide ``cluster_spec`` in the request body to specify the cluster
+    topology for this run (required for disposable environments).
+    """
     plan_key = f"plans/{plan_name}"
 
     # Fetch plan from S3
@@ -140,6 +180,10 @@ async def trigger_run_by_plan(plan_name: str) -> SubmitRunResponse:
     except (yaml.YAMLError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # Validate runtime cluster_spec
+    cluster_spec_dict = body.cluster_spec if body else None
+    _validate_cluster_spec(cluster_spec_dict, plan)
+
     # Generate human-readable run_id
     run_id = _generate_run_id(plan_name)
 
@@ -147,12 +191,14 @@ async def trigger_run_by_plan(plan_name: str) -> SubmitRunResponse:
     result = await asyncio.to_thread(
         _celery.send_task,
         "worker.tasks.dispatcher.dispatcher_task",
-        args=(raw, run_id),
+        args=(raw, run_id, cluster_spec_dict),
     )
 
     # Record in PostgreSQL
     sut_type = plan.test_environment.component_spec.type
-    run_label = raw.get("test_metadata", {}).get("run_label", plan_name)
+    run_label = (body.label if body and body.label else None) or raw.get(
+        "test_metadata", {}
+    ).get("run_label", plan_name)
     await db.insert_run(
         run_id=run_id,
         task_id=result.id,
@@ -161,6 +207,7 @@ async def trigger_run_by_plan(plan_name: str) -> SubmitRunResponse:
         run_label=run_label,
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
+        cluster_spec=cluster_spec_dict,
     )
 
     return SubmitRunResponse(
@@ -189,6 +236,9 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
     def _fmt(ts) -> str | None:
         return ts.isoformat() if ts else None
 
+    # asyncpg decodes JSONB to Python dicts automatically
+    cluster_spec = row.get("cluster_spec")
+
     return RunStatusResponse(
         run_id=row["run_id"],
         status=row["status"],
@@ -196,6 +246,7 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
         run_label=row["run_label"],
         sut_type=row["sut_type"],
         scaling_mode=row["scaling_mode"],
+        cluster_spec=cluster_spec,
         submitted_at=_fmt(row["submitted_at"]),
         started_at=_fmt(row["started_at"]),
         completed_at=_fmt(row["completed_at"]),

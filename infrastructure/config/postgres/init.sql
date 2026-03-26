@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     run_label     TEXT        NOT NULL DEFAULT '',  -- free-form display label
     sut_type      TEXT        NOT NULL DEFAULT '',
     scaling_mode  TEXT        NOT NULL DEFAULT 'intra_node',
+    cluster_spec  JSONB,                            -- runtime cluster topology (per-SUT)
     status        TEXT        NOT NULL DEFAULT 'PENDING',
     error_detail  TEXT,
     submitted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),

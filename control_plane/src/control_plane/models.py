@@ -88,6 +88,12 @@ class SubmitRunRequest(BaseModel):
     plan_yaml: str
     plan_name: str
     label: str = ""
+    cluster_spec: dict | None = None
+
+
+class TriggerRunRequest(BaseModel):
+    label: str = ""
+    cluster_spec: dict | None = None
 
 
 class SubmitRunResponse(BaseModel):
@@ -108,6 +114,7 @@ class RunStatusResponse(BaseModel):
     run_label: str
     sut_type: str
     scaling_mode: str
+    cluster_spec: dict | None = None
     submitted_at: str
     started_at: str | None = None
     completed_at: str | None = None
@@ -137,6 +144,7 @@ class RunSummary(BaseModel):
     sut_type: str
     status: str
     scaling_mode: str
+    cluster_spec: dict | None = None
     submitted_at: str
     completed_at: str | None = None
 

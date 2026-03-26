@@ -73,7 +73,12 @@ def register_tools(mcp: FastMCP) -> None:
         return {"success": True, **result}
 
     @mcp.tool()
-    async def submit_test_run(plan_yaml: str, plan_name: str, label: str = "") -> dict:
+    async def submit_test_run(
+        plan_yaml: str,
+        plan_name: str,
+        label: str = "",
+        cluster_spec: dict | None = None,
+    ) -> dict:
         """Validates and submits a YAML test plan to the Crucible dispatcher.
 
         Validates the plan locally first. If valid, automatically injects
@@ -81,6 +86,9 @@ def register_tools(mcp: FastMCP) -> None:
 
         *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
+        *cluster_spec* is an optional cluster topology dict (e.g.
+        ``{"type": "doris", "backend_node": {"count": 3}}``).  Required for
+        disposable environment plans.
         Returns the run_id on success.
         """
         # Validate locally first
@@ -99,7 +107,30 @@ def register_tools(mcp: FastMCP) -> None:
                 pass  # best-effort injection
 
         try:
-            result = await client.submit_run(plan_yaml, plan_name, label)
+            result = await client.submit_run(plan_yaml, plan_name, label, cluster_spec)
+        except CrucibleError as exc:
+            return {"success": False, "error": exc.detail}
+        return {"success": True, **result}
+
+    @mcp.tool()
+    async def trigger_run_by_plan(
+        plan_name: str,
+        label: str = "",
+        cluster_spec: dict | None = None,
+    ) -> dict:
+        """Triggers a new test run using an existing plan stored in Crucible.
+
+        This is the primary way to re-run a test plan against different cluster
+        configurations. Provide *cluster_spec* to specify the cluster topology
+        (e.g. ``{"type": "doris", "backend_node": {"count": 3}}``).
+        *cluster_spec* is required for disposable environment plans.
+
+        *plan_name* identifies the previously uploaded plan.
+        *label* is an optional free-form display label for the run.
+        Returns the run_id on success.
+        """
+        try:
+            result = await client.trigger_run(plan_name, label, cluster_spec)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}

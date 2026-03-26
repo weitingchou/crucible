@@ -201,6 +201,97 @@ async def test_upload_plan_raises_on_422():
 
 
 # ---------------------------------------------------------------------------
+# trigger_run
+# ---------------------------------------------------------------------------
+
+class _CapturingClient(_FakeClient):
+    """Captures the last POST call arguments for inspection."""
+    def __init__(self, resp):
+        super().__init__(resp)
+        self.last_post_url = None
+        self.last_post_kwargs = {}
+
+    async def post(self, url, **kw):
+        self.last_post_url = url
+        self.last_post_kwargs = kw
+        return self._resp
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_returns_run_id():
+    resp = _mock_response(200, {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import trigger_run
+        result = await trigger_run("bench")
+    assert result["run_id"] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_with_cluster_spec_posts_spec():
+    resp = _mock_response(200, {"run_id": "r2", "plan_key": "plans/bench", "strategy": "intra_node"})
+    spec = {"type": "doris", "backend_node": {"count": 3}}
+    capturing = _CapturingClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import trigger_run
+        await trigger_run("bench", cluster_spec=spec)
+    assert capturing.last_post_kwargs["json"]["cluster_spec"] == spec
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_with_label_posts_label():
+    resp = _mock_response(200, {"run_id": "r3", "plan_key": "plans/bench", "strategy": "intra_node"})
+    capturing = _CapturingClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import trigger_run
+        await trigger_run("bench", label="my-run")
+    assert capturing.last_post_kwargs["json"]["label"] == "my-run"
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_no_label_no_spec_sends_empty_payload():
+    """With no label or cluster_spec, payload should be an empty dict (not None)."""
+    resp = _mock_response(200, {"run_id": "r4", "plan_key": "plans/bench", "strategy": "intra_node"})
+    capturing = _CapturingClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import trigger_run
+        await trigger_run("bench")
+    # json key is present with an empty dict — not None
+    assert "json" in capturing.last_post_kwargs
+    assert capturing.last_post_kwargs["json"] == {}
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_posts_to_correct_url():
+    resp = _mock_response(200, {"run_id": "r5", "plan_key": "plans/my-plan", "strategy": "intra_node"})
+    capturing = _CapturingClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import trigger_run
+        await trigger_run("my-plan")
+    assert capturing.last_post_url == "/v1/test-runs/my-plan"
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_raises_on_404():
+    resp = _mock_response(404, {"detail": "Plan 'bad' not found."})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import trigger_run
+        with pytest.raises(CrucibleError) as exc_info:
+            await trigger_run("bad")
+        assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_raises_on_422():
+    detail = [{"loc": ["body", "cluster_spec"], "msg": "type mismatch"}]
+    resp = _mock_response(422, {"detail": detail})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import trigger_run
+        with pytest.raises(CrucibleError) as exc_info:
+            await trigger_run("bench", cluster_spec={"type": "cassandra"})
+        assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Auth header injection
 # ---------------------------------------------------------------------------
 

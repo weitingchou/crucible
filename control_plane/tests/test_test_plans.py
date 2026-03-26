@@ -104,6 +104,21 @@ def test_create_plan_rejects_missing_name_param():
     assert response.status_code == 422
 
 
+def test_create_disposable_plan_without_cluster_info(mock_save_plan):
+    """Disposable plans don't require cluster_info (it comes at run time)."""
+    disposable = {
+        **VALID_PLAN,
+        "test_environment": {
+            "env_type": "disposable",
+            "target_db": "tpch",
+            "component_spec": {"type": "doris"},
+            "fixtures": [],
+        },
+    }
+    response = client.post("/test-plans?name=disposable", json=disposable)
+    assert response.status_code == 201
+
+
 def test_create_plan_returns_409_when_plan_exists():
     with patch(SAVE_PLAN_PATH, new_callable=AsyncMock) as m_save, \
          patch(PLAN_EXISTS_PATH, new_callable=AsyncMock) as m_exists:

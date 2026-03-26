@@ -17,35 +17,9 @@ class ClusterInfo(BaseModel):
     password: str
 
 
-class NodeSpec(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    count: int = 1
-
-
-class ClusterSpec(BaseModel):
-    """Provision-For-Me spec for an ephemeral cluster."""
-
-    model_config = ConfigDict(extra="allow")
-
-    version: str | None = None
-    frontend_node: NodeSpec | None = None
-
-
 class ComponentSpec(BaseModel):
     type: str
     cluster_info: ClusterInfo | None = None
-    cluster_spec: ClusterSpec | None = None
-
-    @model_validator(mode="after")
-    def _mutually_exclusive_cluster_fields(self) -> "ComponentSpec":
-        has_info = self.cluster_info is not None
-        has_spec = self.cluster_spec is not None
-        if has_info and has_spec:
-            raise ValueError("'cluster_info' and 'cluster_spec' are mutually exclusive; provide only one.")
-        if not has_info and not has_spec:
-            raise ValueError("One of 'cluster_info' or 'cluster_spec' must be provided.")
-        return self
 
 
 class FixtureItem(BaseModel):
@@ -58,6 +32,14 @@ class TestEnvironment(BaseModel):
     component_spec: ComponentSpec
     target_db: str
     fixtures: list[FixtureItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _cluster_info_required_for_long_lived(self) -> "TestEnvironment":
+        if self.env_type == "long-lived" and self.component_spec.cluster_info is None:
+            raise ValueError(
+                "'cluster_info' is required when env_type is 'long-lived'."
+            )
+        return self
 
 
 class WorkloadItem(BaseModel):

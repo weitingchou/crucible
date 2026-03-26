@@ -36,6 +36,33 @@ _VALID_PLAN = {
 
 _VALID_PLAN_YAML = yaml.dump(_VALID_PLAN)
 
+_DISPOSABLE_PLAN = {
+    "test_metadata": {"run_label": "bench"},
+    "test_environment": {
+        "env_type": "disposable",
+        "target_db": "tpch",
+        "component_spec": {"type": "doris"},
+        "fixtures": [],
+    },
+    "execution": {
+        "executor": "k6",
+        "scaling_mode": "intra_node",
+        "concurrency": 10,
+        "ramp_up": "30s",
+        "hold_for": "2m",
+        "workload": [],
+    },
+}
+
+_DISPOSABLE_PLAN_YAML = yaml.dump(_DISPOSABLE_PLAN)
+
+_DORIS_CLUSTER_SPEC = {
+    "type": "doris",
+    "version": "3.0",
+    "frontend_node": {"count": 1},
+    "backend_node": {"count": 3},
+}
+
 
 def _mock_celery_result(task_id: str = "task-123"):
     m = MagicMock()
@@ -231,6 +258,7 @@ def test_get_status_returns_run():
         mock.return_value = {
             "run_id": "r1", "status": "EXECUTING", "plan_name": "smoke",
             "run_label": "test", "sut_type": "doris", "scaling_mode": "intra_node",
+            "cluster_spec": None,
             "submitted_at": ts, "started_at": ts, "completed_at": None,
             "error_detail": None,
         }
@@ -256,6 +284,7 @@ def test_get_status_enriches_waiting_room():
         mock_run.return_value = {
             "run_id": "r1", "status": "WAITING_ROOM", "plan_name": "smoke",
             "run_label": "test", "sut_type": "doris", "scaling_mode": "inter_node",
+            "cluster_spec": None,
             "submitted_at": ts, "started_at": None, "completed_at": None,
             "error_detail": None,
         }
@@ -342,3 +371,219 @@ def test_list_artifacts_returns_files():
     body = response.json()
     assert len(body["artifacts"]) == 2
     assert body["artifacts"][0]["key"] == "results/r1/k6_raw_0.csv"
+
+
+# ---------------------------------------------------------------------------
+# cluster_spec — submit with cluster_spec
+# ---------------------------------------------------------------------------
+
+def test_submit_disposable_plan_with_cluster_spec():
+    """Disposable plan + cluster_spec should succeed and store spec in DB."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        response = client.post("/v1/test-runs", json={
+            "plan_yaml": _DISPOSABLE_PLAN_YAML,
+            "plan_name": "bench",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
+    assert response.status_code == 200
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_spec"] == _DORIS_CLUSTER_SPEC
+
+
+def test_submit_disposable_plan_without_cluster_spec_returns_422():
+    """Disposable plan without cluster_spec should be rejected."""
+    response = client.post("/v1/test-runs", json={
+        "plan_yaml": _DISPOSABLE_PLAN_YAML,
+        "plan_name": "bench",
+    })
+    assert response.status_code == 422
+
+
+def test_submit_cluster_spec_type_mismatch_returns_422():
+    """cluster_spec.type must match component_spec.type."""
+    bad_spec = {**_DORIS_CLUSTER_SPEC, "type": "cassandra"}
+    response = client.post("/v1/test-runs", json={
+        "plan_yaml": _DISPOSABLE_PLAN_YAML,
+        "plan_name": "bench",
+        "cluster_spec": bad_spec,
+    })
+    assert response.status_code == 422
+
+
+def test_submit_invalid_cluster_spec_returns_422():
+    """Invalid cluster_spec (unknown type) should be rejected."""
+    response = client.post("/v1/test-runs", json={
+        "plan_yaml": _DISPOSABLE_PLAN_YAML,
+        "plan_name": "bench",
+        "cluster_spec": {"type": "unknown_db"},
+    })
+    assert response.status_code == 422
+
+
+def test_submit_long_lived_plan_without_cluster_spec_works():
+    """Long-lived plan with cluster_info and no cluster_spec — existing flow."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        response = client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML,
+            "plan_name": "smoke",
+        })
+    assert response.status_code == 200
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_spec"] is None
+
+
+# ---------------------------------------------------------------------------
+# cluster_spec — trigger by plan name with cluster_spec
+# ---------------------------------------------------------------------------
+
+def test_trigger_with_cluster_spec_dispatches_correctly():
+    """Trigger an existing disposable plan with cluster_spec in the body."""
+    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
+    }
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        response = client.post("/v1/test-runs/bench", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
+    assert response.status_code == 200
+    # Celery should receive cluster_spec as third positional arg
+    celery_args = mock_celery.send_task.call_args
+    assert celery_args[1]["args"][2] == _DORIS_CLUSTER_SPEC
+    # DB should store cluster_spec
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_spec"] == _DORIS_CLUSTER_SPEC
+
+
+def test_trigger_with_cluster_spec_stores_label():
+    """Trigger with label in body should use that label."""
+    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
+    }
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        response = client.post("/v1/test-runs/bench", json={
+            "label": "3-be-nodes",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
+    assert response.status_code == 200
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["run_label"] == "3-be-nodes"
+
+
+def test_trigger_disposable_without_cluster_spec_returns_422():
+    """Triggering a disposable plan without cluster_spec should fail."""
+    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
+    }
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        response = client.post("/v1/test-runs/bench")
+    assert response.status_code == 422
+
+
+def test_trigger_cluster_spec_type_mismatch_returns_422():
+    """cluster_spec.type must match the plan's component_spec.type."""
+    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
+    }
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        response = client.post("/v1/test-runs/bench", json={
+            "cluster_spec": {"type": "cassandra"},
+        })
+    assert response.status_code == 422
+
+
+def test_submit_empty_dict_cluster_spec_returns_422():
+    """An empty dict {} is not a valid cluster_spec (missing required 'type')."""
+    response = client.post("/v1/test-runs", json={
+        "plan_yaml": _DISPOSABLE_PLAN_YAML,
+        "plan_name": "bench",
+        "cluster_spec": {},
+    })
+    assert response.status_code == 422
+
+
+def test_submit_long_lived_plan_with_cluster_spec_stores_spec():
+    """Long-lived plans can optionally accept cluster_spec (for inter-node scaling)."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        response = client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML,
+            "plan_name": "smoke",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
+    assert response.status_code == 200
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_spec"] == _DORIS_CLUSTER_SPEC
+
+
+def test_submit_cluster_spec_passed_as_celery_third_arg():
+    """cluster_spec is forwarded to Celery as the third positional argument."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        client.post("/v1/test-runs", json={
+            "plan_yaml": _DISPOSABLE_PLAN_YAML,
+            "plan_name": "bench",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
+    celery_call = mock_celery.send_task.call_args
+    assert celery_call[1]["args"][2] == _DORIS_CLUSTER_SPEC
+
+
+def test_get_status_includes_cluster_spec_in_response():
+    """Run status response should include cluster_spec when present."""
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    spec = {"type": "doris", "backend_node": {"count": 3}}
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {
+            "run_id": "r1", "status": "EXECUTING", "plan_name": "bench",
+            "run_label": "test", "sut_type": "doris", "scaling_mode": "intra_node",
+            "cluster_spec": spec,
+            "submitted_at": ts, "started_at": ts, "completed_at": None,
+            "error_detail": None,
+        }
+        response = client.get("/v1/test-runs/r1/status")
+    assert response.status_code == 200
+    assert response.json()["cluster_spec"] == spec
