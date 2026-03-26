@@ -11,12 +11,19 @@ from ..config import settings
 _pool: asyncpg.Pool | None = None
 
 
+async def _setup_connection(conn: asyncpg.Connection) -> None:
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog",
+    )
+
+
 async def init_pool() -> None:
     global _pool
     _pool = await asyncpg.create_pool(
         dsn=settings.database_url.replace("postgresql+asyncpg://", "postgresql://"),
         min_size=2,
         max_size=10,
+        init=_setup_connection,
     )
 
 
