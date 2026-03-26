@@ -587,3 +587,63 @@ def test_get_status_includes_cluster_spec_in_response():
         response = client.get("/v1/test-runs/r1/status")
     assert response.status_code == 200
     assert response.json()["cluster_spec"] == spec
+
+
+# ---------------------------------------------------------------------------
+# cluster_settings
+# ---------------------------------------------------------------------------
+
+def test_submit_stores_cluster_settings_in_db():
+    """cluster_settings string should be persisted via db.insert_run."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        client.post("/v1/test-runs", json={
+            "plan_yaml": _DISPOSABLE_PLAN_YAML,
+            "plan_name": "bench",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+            "cluster_settings": "concurrency=20",
+        })
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_settings"] == "concurrency=20"
+
+
+def test_trigger_stores_cluster_settings_in_db():
+    """cluster_settings in trigger body should be persisted via db.insert_run."""
+    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
+    mock_s3 = MagicMock()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
+    }
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        client.post("/v1/test-runs/bench", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+            "cluster_settings": "replicas=5",
+        })
+    call_kwargs = mock_insert.call_args[1]
+    assert call_kwargs["cluster_settings"] == "replicas=5"
+
+
+def test_get_status_includes_cluster_settings_in_response():
+    """Run status response should include cluster_settings when present."""
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {
+            "run_id": "r1", "status": "EXECUTING", "plan_name": "bench",
+            "run_label": "test", "sut_type": "doris", "scaling_mode": "intra_node",
+            "cluster_spec": None, "cluster_settings": "concurrency=10",
+            "submitted_at": ts, "started_at": ts, "completed_at": None,
+            "error_detail": None,
+        }
+        response = client.get("/v1/test-runs/r1/status")
+    assert response.status_code == 200
+    assert response.json()["cluster_settings"] == "concurrency=10"

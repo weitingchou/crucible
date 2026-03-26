@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     sut_type      TEXT        NOT NULL DEFAULT '',
     scaling_mode  TEXT        NOT NULL DEFAULT 'intra_node',
     cluster_spec  JSONB,                            -- runtime cluster topology (per-SUT)
+    cluster_settings TEXT,                            -- free-form benchmark factor, e.g. concurrency setting
     status        TEXT        NOT NULL DEFAULT 'PENDING',
     error_detail  TEXT,
     submitted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),

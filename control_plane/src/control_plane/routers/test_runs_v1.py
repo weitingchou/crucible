@@ -131,6 +131,7 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
         cluster_spec=body.cluster_spec,
+        cluster_settings=body.cluster_settings,
     )
 
     return SubmitRunResponse(
@@ -199,6 +200,7 @@ async def trigger_run_by_plan(
     run_label = (body.label if body and body.label else None) or raw.get(
         "test_metadata", {}
     ).get("run_label", plan_name)
+    cluster_settings = body.cluster_settings if body else None
     await db.insert_run(
         run_id=run_id,
         task_id=result.id,
@@ -208,6 +210,7 @@ async def trigger_run_by_plan(
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
         cluster_spec=cluster_spec_dict,
+        cluster_settings=cluster_settings,
     )
 
     return SubmitRunResponse(
@@ -247,6 +250,7 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
         sut_type=row["sut_type"],
         scaling_mode=row["scaling_mode"],
         cluster_spec=cluster_spec,
+        cluster_settings=row.get("cluster_settings"),
         submitted_at=_fmt(row["submitted_at"]),
         started_at=_fmt(row["started_at"]),
         completed_at=_fmt(row["completed_at"]),

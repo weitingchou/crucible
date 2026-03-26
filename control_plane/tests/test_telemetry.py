@@ -59,3 +59,28 @@ def test_recent_stats_handles_null_completed_at():
         response = client.get("/v1/telemetry/recent-stats")
     body = response.json()
     assert body["runs"][0]["completed_at"] is None
+
+
+def test_recent_stats_includes_cluster_settings():
+    """cluster_settings from DB row should appear in the RunSummary response."""
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with patch("control_plane.routers.telemetry.db.list_recent_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = [
+            {
+                "run_id": "r3",
+                "plan_name": "bench",
+                "run_label": "3be",
+                "sut_type": "doris",
+                "status": "COMPLETED",
+                "scaling_mode": "intra_node",
+                "cluster_spec": {"type": "doris", "backend_node": {"replica": 3}},
+                "cluster_settings": "concurrency=50",
+                "submitted_at": ts,
+                "completed_at": ts,
+            },
+        ]
+        response = client.get("/v1/telemetry/recent-stats")
+    body = response.json()
+    run = body["runs"][0]
+    assert run["cluster_settings"] == "concurrency=50"
+    assert run["cluster_spec"]["backend_node"]["replica"] == 3

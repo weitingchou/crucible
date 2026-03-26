@@ -23,6 +23,7 @@ async def recent_stats() -> RecentStatsResponse:
             status=r["status"],
             scaling_mode=r["scaling_mode"],
             cluster_spec=r.get("cluster_spec"),
+            cluster_settings=r.get("cluster_settings"),
             submitted_at=_fmt(r["submitted_at"]),
             completed_at=_fmt(r["completed_at"]),
         )

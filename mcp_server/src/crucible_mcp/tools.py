@@ -81,6 +81,7 @@ def register_tools(mcp: FastMCP) -> None:
         plan_name: str,
         label: str = "",
         cluster_spec: dict | None = None,
+        cluster_settings: str | None = None,
     ) -> dict:
         """Validates and submits a YAML test plan to the Crucible dispatcher.
 
@@ -92,6 +93,8 @@ def register_tools(mcp: FastMCP) -> None:
         *cluster_spec* is an optional cluster topology dict (e.g.
         ``{"type": "doris", "backend_node": {"replica": 3}}``).  Required for
         disposable environment plans.
+        *cluster_settings* is an optional free-form string recording the benchmark
+        factor under test (e.g. a concurrency setting).
         Returns the run_id on success.
         """
         # Validate locally first
@@ -120,7 +123,7 @@ def register_tools(mcp: FastMCP) -> None:
                 pass  # best-effort injection
 
         try:
-            result = await client.submit_run(plan_yaml, plan_name, label, cluster_spec)
+            result = await client.submit_run(plan_yaml, plan_name, label, cluster_spec, cluster_settings)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}
@@ -130,6 +133,7 @@ def register_tools(mcp: FastMCP) -> None:
         plan_name: str,
         label: str = "",
         cluster_spec: dict | None = None,
+        cluster_settings: str | None = None,
     ) -> dict:
         """Triggers a new test run using an existing plan stored in Crucible.
 
@@ -140,6 +144,8 @@ def register_tools(mcp: FastMCP) -> None:
 
         *plan_name* identifies the previously uploaded plan.
         *label* is an optional free-form display label for the run.
+        *cluster_settings* is an optional free-form string recording the benchmark
+        factor under test (e.g. a concurrency setting).
         Returns the run_id on success.
         """
         if cluster_spec is not None:
@@ -153,7 +159,7 @@ def register_tools(mcp: FastMCP) -> None:
                 return {"success": False, "errors": errors}
 
         try:
-            result = await client.trigger_run(plan_name, label, cluster_spec)
+            result = await client.trigger_run(plan_name, label, cluster_spec, cluster_settings)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}
