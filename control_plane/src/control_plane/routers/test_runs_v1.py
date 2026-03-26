@@ -20,6 +20,8 @@ from ..config import settings
 from ..models import (
     ArtifactEntry,
     ArtifactsResponse,
+    ListRunsResponse,
+    RunDetail,
     RunStatusResponse,
     StopRunResponse,
     SubmitRunRequest,
@@ -139,6 +141,34 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
         plan_key=plan_key,
         strategy=plan.execution.scaling_mode,
     )
+
+
+@router.get("", summary="List test runs")
+async def list_test_runs(run_label: str | None = None) -> ListRunsResponse:
+    """Return test runs, optionally filtered by *run_label*."""
+    rows = await db.list_runs(run_label=run_label)
+
+    def _fmt(ts) -> str | None:
+        return ts.isoformat() if ts else None
+
+    runs = [
+        RunDetail(
+            run_id=r["run_id"],
+            plan_name=r["plan_name"],
+            run_label=r["run_label"],
+            sut_type=r["sut_type"],
+            status=r["status"],
+            scaling_mode=r["scaling_mode"],
+            cluster_spec=r.get("cluster_spec"),
+            cluster_settings=r.get("cluster_settings"),
+            submitted_at=_fmt(r["submitted_at"]),
+            started_at=_fmt(r["started_at"]),
+            completed_at=_fmt(r["completed_at"]),
+            error_detail=r.get("error_detail"),
+        )
+        for r in rows
+    ]
+    return ListRunsResponse(runs=runs)
 
 
 @router.post(

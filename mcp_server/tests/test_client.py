@@ -312,3 +312,49 @@ async def test_headers_empty_when_no_token():
         from crucible_mcp.client import _headers
         h = _headers()
     assert h == {}
+
+
+# ---------------------------------------------------------------------------
+# list_runs
+# ---------------------------------------------------------------------------
+
+class _CapturingGetClient(_FakeClient):
+    """Captures the last GET call arguments for inspection."""
+    def __init__(self, resp):
+        super().__init__(resp)
+        self.last_get_url = None
+        self.last_get_kwargs = {}
+
+    async def get(self, url, **kw):
+        self.last_get_url = url
+        self.last_get_kwargs = kw
+        return self._resp
+
+
+@pytest.mark.asyncio
+async def test_list_runs_returns_runs():
+    resp = _mock_response(200, {"runs": [{"run_id": "r1"}]})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import list_runs
+        result = await list_runs()
+    assert result["runs"][0]["run_id"] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_list_runs_passes_run_label_param():
+    resp = _mock_response(200, {"runs": []})
+    capturing = _CapturingGetClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import list_runs
+        await list_runs(run_label="bench")
+    assert capturing.last_get_kwargs["params"] == {"run_label": "bench"}
+
+
+@pytest.mark.asyncio
+async def test_list_runs_no_label_sends_empty_params():
+    resp = _mock_response(200, {"runs": []})
+    capturing = _CapturingGetClient(resp)
+    with patch("crucible_mcp.client._client", return_value=capturing):
+        from crucible_mcp.client import list_runs
+        await list_runs()
+    assert capturing.last_get_kwargs.get("params", {}) == {}

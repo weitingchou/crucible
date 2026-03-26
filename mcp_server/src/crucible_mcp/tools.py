@@ -165,6 +165,21 @@ def register_tools(mcp: FastMCP) -> None:
         return {"success": True, **result}
 
     @mcp.tool()
+    async def list_test_runs(run_label: str = "") -> dict:
+        """Lists test runs, optionally filtered by *run_label*.
+
+        Returns all runs ordered by submission time (newest first).
+        Each run includes full metadata: status, cluster_spec, cluster_settings,
+        timestamps, and error details.
+
+        Provide *run_label* to filter runs matching that label.
+        """
+        try:
+            return await client.list_runs(run_label or None)
+        except CrucibleError as exc:
+            return {"error": exc.detail}
+
+    @mcp.tool()
     async def monitor_test_progress(run_id: str) -> dict:
         """Returns the real-time status of a test run: PENDING, WAITING_ROOM, EXECUTING, COMPLETED, or FAILED."""
         try:

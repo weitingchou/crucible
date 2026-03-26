@@ -93,6 +93,19 @@ async def get_waiting_room_info(run_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def list_runs(run_label: str | None = None) -> list[dict]:
+    if run_label:
+        rows = await _get_pool().fetch(
+            "SELECT * FROM test_runs WHERE run_label = $1 ORDER BY submitted_at DESC",
+            run_label,
+        )
+    else:
+        rows = await _get_pool().fetch(
+            "SELECT * FROM test_runs ORDER BY submitted_at DESC"
+        )
+    return [dict(r) for r in rows]
+
+
 async def list_recent_runs(limit: int = 5) -> list[dict]:
     rows = await _get_pool().fetch(
         "SELECT * FROM test_runs ORDER BY submitted_at DESC LIMIT $1", limit

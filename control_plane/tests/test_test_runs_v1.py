@@ -647,3 +647,75 @@ def test_get_status_includes_cluster_settings_in_response():
         response = client.get("/v1/test-runs/r1/status")
     assert response.status_code == 200
     assert response.json()["cluster_settings"] == "concurrency=10"
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/test-runs — list test runs
+# ---------------------------------------------------------------------------
+
+def _make_run_row(run_id, run_label="bench", status="COMPLETED"):
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    return {
+        "run_id": run_id, "plan_name": "smoke", "run_label": run_label,
+        "sut_type": "doris", "status": status, "scaling_mode": "intra_node",
+        "cluster_spec": None, "cluster_settings": None,
+        "submitted_at": ts, "started_at": ts, "completed_at": ts,
+        "error_detail": None,
+    }
+
+
+def test_list_runs_returns_all():
+    """GET /v1/test-runs with no filter returns all runs."""
+    rows = [_make_run_row("r1"), _make_run_row("r2")]
+    with patch("control_plane.routers.test_runs_v1.db.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = rows
+        response = client.get("/v1/test-runs")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["runs"]) == 2
+    mock.assert_awaited_once_with(run_label=None)
+
+
+def test_list_runs_filters_by_run_label():
+    """GET /v1/test-runs?run_label=bench filters by label."""
+    rows = [_make_run_row("r1", run_label="bench")]
+    with patch("control_plane.routers.test_runs_v1.db.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = rows
+        response = client.get("/v1/test-runs", params={"run_label": "bench"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["runs"]) == 1
+    assert data["runs"][0]["run_label"] == "bench"
+    mock.assert_awaited_once_with(run_label="bench")
+
+
+def test_list_runs_empty_result():
+    """GET /v1/test-runs returns empty list when no runs match."""
+    with patch("control_plane.routers.test_runs_v1.db.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = []
+        response = client.get("/v1/test-runs", params={"run_label": "nonexistent"})
+    assert response.status_code == 200
+    assert response.json()["runs"] == []
+
+
+def test_list_runs_includes_all_metadata_fields():
+    """Each run in the list should include all metadata fields."""
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    row = {
+        "run_id": "r1", "plan_name": "smoke", "run_label": "bench",
+        "sut_type": "doris", "status": "COMPLETED", "scaling_mode": "intra_node",
+        "cluster_spec": {"type": "doris", "backend_node": {"replica": 3}},
+        "cluster_settings": "concurrency=20",
+        "submitted_at": ts, "started_at": ts, "completed_at": ts,
+        "error_detail": None,
+    }
+    with patch("control_plane.routers.test_runs_v1.db.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = [row]
+        response = client.get("/v1/test-runs")
+    run = response.json()["runs"][0]
+    assert run["run_id"] == "r1"
+    assert run["cluster_spec"] == {"type": "doris", "backend_node": {"replica": 3}}
+    assert run["cluster_settings"] == "concurrency=20"
+    assert run["started_at"] is not None
+    assert run["completed_at"] is not None
+    assert run["error_detail"] is None

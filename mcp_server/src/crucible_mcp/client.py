@@ -73,6 +73,16 @@ async def trigger_run(
         return resp.json()
 
 
+async def list_runs(run_label: str | None = None) -> dict:
+    params = {}
+    if run_label:
+        params["run_label"] = run_label
+    async with _client() as c:
+        resp = await c.get("/v1/test-runs", params=params)
+        raise_for_response(resp)
+        return resp.json()
+
+
 async def get_run_status(run_id: str) -> dict:
     async with _client() as c:
         resp = await c.get(f"/v1/test-runs/{run_id}/status")

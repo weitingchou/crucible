@@ -477,3 +477,36 @@ async def test_trigger_passes_cluster_settings_to_client(mcp_app):
         mock.return_value = {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"}
         await fn("bench", "", None, "concurrency=50")
     mock.assert_awaited_once_with("bench", "", None, "concurrency=50")
+
+
+# ---------------------------------------------------------------------------
+# list_test_runs
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_test_runs_no_filter(mcp_app):
+    fn = _get_tool(mcp_app, "list_test_runs")
+    with patch("crucible_mcp.tools.client.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = {"runs": [{"run_id": "r1"}]}
+        result = await fn("")
+    assert result["runs"][0]["run_id"] == "r1"
+    mock.assert_awaited_once_with(None)
+
+
+@pytest.mark.asyncio
+async def test_list_test_runs_with_label(mcp_app):
+    fn = _get_tool(mcp_app, "list_test_runs")
+    with patch("crucible_mcp.tools.client.list_runs", new_callable=AsyncMock) as mock:
+        mock.return_value = {"runs": [{"run_id": "r1", "run_label": "bench"}]}
+        result = await fn("bench")
+    assert len(result["runs"]) == 1
+    mock.assert_awaited_once_with("bench")
+
+
+@pytest.mark.asyncio
+async def test_list_test_runs_catches_error(mcp_app):
+    fn = _get_tool(mcp_app, "list_test_runs")
+    with patch("crucible_mcp.tools.client.list_runs", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "Internal error")
+        result = await fn("")
+    assert "error" in result
