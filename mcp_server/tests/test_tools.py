@@ -394,6 +394,24 @@ async def test_submit_passes_cluster_spec_to_client(mcp_app):
     assert call_args[3] == spec
 
 
+@pytest.mark.asyncio
+async def test_submit_rejects_invalid_cluster_spec(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    spec = {"type": "unknown_db"}
+    result = await fn(_VALID_PLAN_YAML, "smoke", "", spec)
+    assert result["success"] is False
+    assert "errors" in result
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_cluster_spec_with_invalid_replica(mcp_app):
+    fn = _get_tool(mcp_app, "submit_test_run")
+    spec = {"type": "doris", "backend_node": {"replica": 0}}
+    result = await fn(_VALID_PLAN_YAML, "smoke", "", spec)
+    assert result["success"] is False
+    assert "errors" in result
+
+
 # ---------------------------------------------------------------------------
 # trigger_run_by_plan
 # ---------------------------------------------------------------------------
@@ -417,6 +435,15 @@ async def test_trigger_run_by_plan_with_cluster_spec(mcp_app):
         result = await fn("bench", "5-be-run", spec)
     assert result["success"] is True
     mock.assert_awaited_once_with("bench", "5-be-run", spec)
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_by_plan_rejects_invalid_cluster_spec(mcp_app):
+    fn = _get_tool(mcp_app, "trigger_run_by_plan")
+    spec = {"type": "unknown_db"}
+    result = await fn("bench", "", spec)
+    assert result["success"] is False
+    assert "errors" in result
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import yaml
 from mcp.server.fastmcp import FastMCP
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from crucible_lib.schemas import ClusterSpec
 from crucible_lib.schemas.test_plan import TestPlan
 from crucible_lib.schemas.workload import validate_workload
+
+_cluster_spec_adapter = TypeAdapter(ClusterSpec)
 
 from . import client
 from .config import settings
@@ -96,6 +99,16 @@ def register_tools(mcp: FastMCP) -> None:
         if not validation["valid"]:
             return {"success": False, "errors": validation["errors"]}
 
+        if cluster_spec is not None:
+            try:
+                _cluster_spec_adapter.validate_python(cluster_spec)
+            except ValidationError as exc:
+                errors = [
+                    {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
+                    for e in exc.errors()
+                ]
+                return {"success": False, "errors": errors}
+
         # Auto-inject K6_PROMETHEUS_RW_SERVER_URL if configured and plan lacks it
         if settings.k6_prometheus_rw_url:
             try:
@@ -129,6 +142,16 @@ def register_tools(mcp: FastMCP) -> None:
         *label* is an optional free-form display label for the run.
         Returns the run_id on success.
         """
+        if cluster_spec is not None:
+            try:
+                _cluster_spec_adapter.validate_python(cluster_spec)
+            except ValidationError as exc:
+                errors = [
+                    {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
+                    for e in exc.errors()
+                ]
+                return {"success": False, "errors": errors}
+
         try:
             result = await client.trigger_run(plan_name, label, cluster_spec)
         except CrucibleError as exc:
