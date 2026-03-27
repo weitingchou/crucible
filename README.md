@@ -334,7 +334,6 @@ The MCP server exposes Crucible's capabilities to AI agents via the [Model Conte
 | URI | Description |
 |---|---|
 | `crucible://fixtures/registry` | Metadata about uploaded datasets in S3/MinIO |
-| `crucible://telemetry/recent-stats` | Summary of the last 5 test runs |
 | `crucible://logs/{run_id}` | S3 artifact files produced by a test run |
 
 ### Run locally (stdio mode)

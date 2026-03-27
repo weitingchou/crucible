@@ -37,8 +37,8 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("crucible://telemetry/recent-stats")
     async def get_recent_stats() -> str:
-        """Summary of the last 5 test runs for baseline comparison context."""
-        data = await client.get_recent_stats()
+        """Summary of recent test runs for baseline comparison context."""
+        data = await client.list_runs()
         runs = data.get("runs", [])
 
         if not runs:

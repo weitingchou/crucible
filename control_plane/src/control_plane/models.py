@@ -158,19 +158,3 @@ class RunDetail(BaseModel):
 class ListRunsResponse(BaseModel):
     runs: list[RunDetail]
 
-
-class RunSummary(BaseModel):
-    run_id: str
-    plan_name: str
-    run_label: str
-    sut_type: str
-    status: str
-    scaling_mode: str
-    cluster_spec: dict | None = None
-    cluster_settings: str | None = None
-    submitted_at: str
-    completed_at: str | None = None
-
-
-class RecentStatsResponse(BaseModel):
-    runs: list[RunSummary]

@@ -111,10 +111,3 @@ async def list_runs(run_label: str | None = None) -> list[dict]:
             "SELECT * FROM test_runs ORDER BY submitted_at DESC"
         )
     return [dict(r) for r in rows]
-
-
-async def list_recent_runs(limit: int = 5) -> list[dict]:
-    rows = await _get_pool().fetch(
-        "SELECT * FROM test_runs ORDER BY submitted_at DESC LIMIT $1", limit
-    )
-    return [dict(r) for r in rows]

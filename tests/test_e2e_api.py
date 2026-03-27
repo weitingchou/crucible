@@ -454,36 +454,6 @@ class TestArtifacts:
         assert body["artifacts"] == []
 
 
-# ---------------------------------------------------------------------------
-# GET /v1/telemetry/recent-stats
-# ---------------------------------------------------------------------------
-
-class TestRecentStats:
-
-    @pytest.fixture(autouse=True)
-    def _setup_run(self):
-        self.run_id = f"e2e-stats-{_SESSION_TAG}"
-        _pg_execute(
-            """INSERT INTO test_runs
-               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
-                scaling_mode, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-            (
-                self.run_id, "task-stats", "e2e-plan", "plans/e2e-plan",
-                f"e2e-stats-{_SESSION_TAG}", "doris", "intra_node", "COMPLETED",
-            ),
-        )
-        yield
-        _cleanup_run(self.run_id)
-
-    def test_recent_stats_includes_run(self):
-        resp = httpx.get(f"{API_BASE}/v1/telemetry/recent-stats", timeout=10)
-        assert resp.status_code == 200
-        body = resp.json()
-        run_ids = [r["run_id"] for r in body["runs"]]
-        assert self.run_id in run_ids
-
-
 # ===========================================================================
 # FAILURE PATH TESTS
 # ===========================================================================

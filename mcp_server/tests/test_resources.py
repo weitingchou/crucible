@@ -83,7 +83,7 @@ async def test_fixture_registry_handles_fetch_error(mcp_app):
 @pytest.mark.asyncio
 async def test_recent_stats_no_runs(mcp_app):
     fn = _get_resource_fn(mcp_app, "crucible://telemetry/recent-stats")
-    with patch("crucible_mcp.resources.client.get_recent_stats", new_callable=AsyncMock) as mock:
+    with patch("crucible_mcp.resources.client.list_runs", new_callable=AsyncMock) as mock:
         mock.return_value = {"runs": []}
         result = await fn()
     assert result == "No test runs recorded yet."
@@ -92,7 +92,7 @@ async def test_recent_stats_no_runs(mcp_app):
 @pytest.mark.asyncio
 async def test_recent_stats_with_completed_run(mcp_app):
     fn = _get_resource_fn(mcp_app, "crucible://telemetry/recent-stats")
-    with patch("crucible_mcp.resources.client.get_recent_stats", new_callable=AsyncMock) as mock:
+    with patch("crucible_mcp.resources.client.list_runs", new_callable=AsyncMock) as mock:
         mock.return_value = {
             "runs": [
                 {
@@ -116,7 +116,7 @@ async def test_recent_stats_with_completed_run(mcp_app):
 @pytest.mark.asyncio
 async def test_recent_stats_with_pending_run(mcp_app):
     fn = _get_resource_fn(mcp_app, "crucible://telemetry/recent-stats")
-    with patch("crucible_mcp.resources.client.get_recent_stats", new_callable=AsyncMock) as mock:
+    with patch("crucible_mcp.resources.client.list_runs", new_callable=AsyncMock) as mock:
         mock.return_value = {
             "runs": [
                 {

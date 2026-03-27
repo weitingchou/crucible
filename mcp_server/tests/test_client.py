@@ -155,17 +155,8 @@ async def test_get_fixture_files():
 
 
 # ---------------------------------------------------------------------------
-# get_recent_stats / get_run_artifacts
+# get_run_artifacts
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_recent_stats():
-    resp = _mock_response(200, {"runs": []})
-    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
-        from crucible_mcp.client import get_recent_stats
-        result = await get_recent_stats()
-    assert result["runs"] == []
-
 
 @pytest.mark.asyncio
 async def test_get_run_artifacts():
