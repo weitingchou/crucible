@@ -16,6 +16,10 @@ htmlcov/
 # Generated test fixtures (Parquet data files)
 tests/fixtures/
 
+# E2E test runtime artifacts
+.e2e-api.log
+.e2e-api.pid
+
 # Environment / secrets
 .env
 .env.*
