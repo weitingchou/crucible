@@ -55,7 +55,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "==> Starting docker services..."
 cd "$INFRA_DIR"
-docker compose up -d rabbitmq postgres minio
+docker compose up -d rabbitmq postgres minio prometheus
 
 # ---------------------------------------------------------------------------
 # 2. Wait for health checks
@@ -97,6 +97,19 @@ for _ in $(seq 1 15); do
     status=$(docker compose ps --format '{{.State}}' minio-init 2>/dev/null || echo "running")
     if [[ "$status" == "exited" ]]; then
         break
+    fi
+    sleep 1
+done
+
+# Wait for Prometheus to be ready
+echo "==> Waiting for Prometheus..."
+for i in $(seq 1 20); do
+    if curl -sf http://localhost:9090/-/healthy > /dev/null 2>&1; then
+        echo "  Prometheus ready."
+        break
+    fi
+    if [[ $i -eq 20 ]]; then
+        echo "WARNING: Prometheus did not become healthy. Prometheus e2e tests will be skipped."
     fi
     sleep 1
 done

@@ -17,7 +17,9 @@ after themselves.
 
 from __future__ import annotations
 
+import json
 import pathlib
+import time
 import uuid
 
 import boto3
@@ -31,6 +33,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 API_BASE = "http://localhost:8000"
+PROMETHEUS_URL = "http://localhost:9090"
 MINIO_ENDPOINT = "http://localhost:9000"
 MINIO_ACCESS_KEY = "minioadmin"
 MINIO_SECRET_KEY = "minioadmin"
@@ -77,7 +80,16 @@ def _minio_reachable() -> bool:
         return False
 
 
+def _prometheus_reachable() -> bool:
+    try:
+        r = httpx.get(f"{PROMETHEUS_URL}/-/healthy", timeout=2)
+        return r.status_code == 200
+    except httpx.ConnectError:
+        return False
+
+
 _infra_ok = _api_reachable() and _pg_reachable() and _minio_reachable()
+_prometheus_ok = _prometheus_reachable() if _infra_ok else False
 pytestmark = pytest.mark.skipif(
     not _infra_ok,
     reason="Local infrastructure not running (API / PostgreSQL / MinIO)",
@@ -682,3 +694,397 @@ class TestStopStoppingRun:
         resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.run_id}/stop", timeout=10)
         assert resp.status_code == 200
         assert resp.json()["action"] == "already_stopped"
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/test-runs/{run_id}/results
+# ---------------------------------------------------------------------------
+
+class TestResults:
+    """Results endpoint loads structured data from S3."""
+
+    def test_results_returns_404_for_unknown_run(self):
+        resp = httpx.get(
+            f"{API_BASE}/v1/test-runs/nonexistent-{_SESSION_TAG}/results",
+            timeout=10,
+        )
+        assert resp.status_code == 404
+
+    def test_results_returns_409_for_pending_run(self):
+        run_id = f"e2e-results-pending-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                run_id, "task-rp", "e2e-plan", "plans/e2e-plan",
+                "results-test", "doris", "intra_node", "PENDING",
+            ),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 409
+        finally:
+            _cleanup_run(run_id)
+
+    def test_results_returns_200_for_completed_run_with_s3_data(self):
+        run_id = f"e2e-results-ok-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                run_id, "task-rok", "e2e-plan", "plans/e2e-plan",
+                "results-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        # Upload a fake results.json to S3
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2025-03-15T14:35:00Z",
+            "collection_error": None,
+            "k6": {
+                "metrics": [
+                    {"name": "sql_duration_Q1", "type": "trend",
+                     "stats": {"count": 100, "min": 1.0, "max": 50.0, "avg": 10.0,
+                               "med": 8.0, "p90": 25.0, "p95": 35.0, "p99": 48.0}},
+                ],
+            },
+            "observability": {"sources": []},
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["run_id"] == run_id
+            assert body["status"] == "COMPLETED"
+            assert body["k6"]["metrics"][0]["name"] == "sql_duration_Q1"
+            assert body["k6"]["metrics"][0]["stats"]["count"] == 100
+            assert body["collection_error"] is None
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass
+
+    def test_results_includes_observability_sources(self):
+        run_id = f"e2e-results-obs-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                run_id, "task-robs", "e2e-plan", "plans/e2e-plan",
+                "results-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2025-03-15T14:35:00Z",
+            "collection_error": None,
+            "k6": {"metrics": []},
+            "observability": {
+                "sources": [
+                    {
+                        "name": "engine",
+                        "url": "http://prometheus:9090",
+                        "metrics": [
+                            {
+                                "name": "cluster_qps",
+                                "query": "sum(rate(doris_be_query_total[1m]))",
+                                "values": [[1710510600, "245.3"], [1710510615, "312.7"]],
+                            },
+                            {
+                                "name": "avg_memory",
+                                "query": "avg(doris_be_mem_usage_bytes)",
+                                "values": [[1710510600, "4294967296"]],
+                            },
+                        ],
+                    },
+                    {
+                        "name": "infra",
+                        "url": "http://prom-infra:9090",
+                        "metrics": [
+                            {
+                                "name": "cpu_usage",
+                                "query": "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))",
+                                "values": [[1710510600, "0.45"], [1710510615, "0.52"]],
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            sources = body["observability"]["sources"]
+            assert len(sources) == 2
+            # Verify engine source
+            engine = next(s for s in sources if s["name"] == "engine")
+            assert engine["url"] == "http://prometheus:9090"
+            assert len(engine["metrics"]) == 2
+            qps = next(m for m in engine["metrics"] if m["name"] == "cluster_qps")
+            assert len(qps["values"]) == 2
+            assert qps["values"][0] == [1710510600, "245.3"]
+            # Verify infra source
+            infra = next(s for s in sources if s["name"] == "infra")
+            assert infra["url"] == "http://prom-infra:9090"
+            assert len(infra["metrics"]) == 1
+            assert infra["metrics"][0]["name"] == "cpu_usage"
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass
+
+    def test_results_handles_missing_s3_file(self):
+        run_id = f"e2e-results-no-s3-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                run_id, "task-rns", "e2e-plan", "plans/e2e-plan",
+                "results-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["run_id"] == run_id
+            assert body["collection_error"] is not None
+        finally:
+            _cleanup_run(run_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/test-runs/{run_id}/results — real Prometheus integration
+# ---------------------------------------------------------------------------
+
+def _query_prometheus_range(query: str, start: float, end: float, step: int = 15) -> list:
+    """Query Prometheus query_range API and return raw values list."""
+    resp = httpx.get(
+        f"{PROMETHEUS_URL}/api/v1/query_range",
+        params={"query": query, "start": start, "end": end, "step": f"{step}s"},
+        timeout=10,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "success"
+    values = []
+    for series in body["data"]["result"]:
+        values.extend(series["values"])
+    return values
+
+
+@pytest.mark.skipif(not _prometheus_ok, reason="Prometheus not running")
+class TestResultsWithPrometheus:
+    """Tests that query real Prometheus — requires ``prometheus`` service running."""
+
+    def test_query_range_returns_real_timeseries(self):
+        """Directly hit Prometheus query_range API and verify real data comes back."""
+        now = time.time()
+        start = now - 120  # last 2 minutes
+        values = _query_prometheus_range('up{job="prometheus"}', start, now)
+        assert len(values) > 0
+        # Each value is [unix_timestamp, "string_value"]
+        ts, val = values[0]
+        assert isinstance(ts, (int, float))
+        assert val == "1"  # self-scrape target is always up
+
+    def test_results_api_with_real_prometheus_data(self):
+        """Full pipeline: query real Prometheus → build results JSON → upload
+        to S3 → hit API → verify real time-series data in response."""
+        run_id = f"e2e-prom-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, started_at, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                       now() - interval '2 minutes', now())""",
+            (
+                run_id, "task-prom", "e2e-plan", "plans/e2e-plan",
+                "prom-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+
+        # Query real Prometheus for two metrics
+        now = time.time()
+        start = now - 120
+        up_values = _query_prometheus_range('up{job="prometheus"}', start, now)
+        build_values = _query_prometheus_range("prometheus_build_info", start, now)
+
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2025-03-15T14:35:00Z",
+            "collection_error": None,
+            "k6": {"metrics": []},
+            "observability": {
+                "sources": [
+                    {
+                        "name": "prometheus-self",
+                        "url": PROMETHEUS_URL,
+                        "metrics": [
+                            {
+                                "name": "target_up",
+                                "query": 'up{job="prometheus"}',
+                                "values": up_values,
+                            },
+                            {
+                                "name": "build_info",
+                                "query": "prometheus_build_info",
+                                "values": build_values,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+
+            sources = body["observability"]["sources"]
+            assert len(sources) == 1
+            src = sources[0]
+            assert src["name"] == "prometheus-self"
+            assert src["url"] == PROMETHEUS_URL
+
+            # Verify two metrics came through
+            assert len(src["metrics"]) == 2
+            up_metric = next(m for m in src["metrics"] if m["name"] == "target_up")
+            build_metric = next(m for m in src["metrics"] if m["name"] == "build_info")
+
+            # Real time-series — multiple data points, all with value "1"
+            assert len(up_metric["values"]) > 0
+            for ts, val in up_metric["values"]:
+                assert isinstance(ts, (int, float))
+                assert val == "1"
+
+            assert len(build_metric["values"]) > 0
+            for ts, val in build_metric["values"]:
+                assert isinstance(ts, (int, float))
+                assert val == "1"
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass
+
+    def test_multiple_prometheus_sources_with_real_data(self):
+        """Verify multiple named sources work with real Prometheus data.
+
+        Uses the same Prometheus instance as two logical sources (engine vs infra)
+        with different queries — mirrors the multi-source design.
+        """
+        run_id = f"e2e-prom-multi-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, started_at, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                       now() - interval '2 minutes', now())""",
+            (
+                run_id, "task-prom-m", "e2e-plan", "plans/e2e-plan",
+                "prom-multi", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+
+        now = time.time()
+        start = now - 120
+        up_values = _query_prometheus_range('up{job="prometheus"}', start, now)
+        scrape_values = _query_prometheus_range(
+            "scrape_duration_seconds", start, now
+        )
+
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2025-03-15T14:35:00Z",
+            "collection_error": None,
+            "k6": {"metrics": []},
+            "observability": {
+                "sources": [
+                    {
+                        "name": "engine",
+                        "url": PROMETHEUS_URL,
+                        "metrics": [
+                            {
+                                "name": "target_up",
+                                "query": 'up{job="prometheus"}',
+                                "values": up_values,
+                            },
+                        ],
+                    },
+                    {
+                        "name": "infra",
+                        "url": PROMETHEUS_URL,
+                        "metrics": [
+                            {
+                                "name": "scrape_duration",
+                                "query": "scrape_duration_seconds",
+                                "values": scrape_values,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+
+            sources = body["observability"]["sources"]
+            assert len(sources) == 2
+            source_names = {s["name"] for s in sources}
+            assert source_names == {"engine", "infra"}
+
+            engine = next(s for s in sources if s["name"] == "engine")
+            assert len(engine["metrics"]) == 1
+            assert engine["metrics"][0]["name"] == "target_up"
+            assert len(engine["metrics"][0]["values"]) > 0
+
+            infra = next(s for s in sources if s["name"] == "infra")
+            assert len(infra["metrics"]) == 1
+            assert infra["metrics"][0]["name"] == "scrape_duration"
+            # scrape_duration_seconds is a real gauge — values are floats > 0
+            assert len(infra["metrics"][0]["values"]) > 0
+            for ts, val in infra["metrics"][0]["values"]:
+                assert float(val) > 0
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass

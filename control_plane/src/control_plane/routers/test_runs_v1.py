@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -26,6 +27,7 @@ from ..models import (
     StopRunResponse,
     SubmitRunRequest,
     SubmitRunResponse,
+    TestRunResults,
     TriggerRunRequest,
     WaitingRoomInfo,
 )
@@ -329,3 +331,48 @@ async def list_run_artifacts(run_id: str) -> ArtifactsResponse:
 
     artifacts = await asyncio.to_thread(_list_objects)
     return ArtifactsResponse(run_id=run_id, artifacts=artifacts)
+
+
+@router.get("/{run_id}/results", summary="Get structured test results")
+async def get_run_results(run_id: str) -> TestRunResults:
+    """Return k6 summary stats and observability metrics collected after the run."""
+    row = await db.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    if row["status"] not in ("COLLECTING", "COMPLETED", "FAILED"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Results not yet available (status={row['status']}).",
+        )
+
+    def _load_results() -> dict | None:
+        s3 = _s3()
+        try:
+            resp = s3.get_object(
+                Bucket=settings.s3_bucket,
+                Key=f"results/{run_id}/results.json",
+            )
+            return json.loads(resp["Body"].read())
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    data = await asyncio.to_thread(_load_results)
+
+    if data is None:
+        return TestRunResults(
+            run_id=run_id,
+            status=row["status"],
+            collection_error="Results file not yet available.",
+        )
+
+    return TestRunResults(
+        run_id=run_id,
+        status=row["status"],
+        collected_at=data.get("collected_at"),
+        collection_error=data.get("collection_error"),
+        k6=data.get("k6", {}),
+        observability=data.get("observability", {}),
+    )

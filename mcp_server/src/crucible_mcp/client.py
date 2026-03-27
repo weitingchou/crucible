@@ -111,6 +111,13 @@ async def get_fixture_files(fixture_id: str) -> dict:
         return resp.json()
 
 
+async def get_run_results(run_id: str) -> dict:
+    async with _client() as c:
+        resp = await c.get(f"/v1/test-runs/{run_id}/results")
+        raise_for_response(resp)
+        return resp.json()
+
+
 async def get_run_artifacts(run_id: str) -> dict:
     async with _client() as c:
         resp = await c.get(f"/v1/test-runs/{run_id}/artifacts")

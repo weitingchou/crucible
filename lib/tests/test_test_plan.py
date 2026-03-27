@@ -5,8 +5,8 @@ from pydantic import ValidationError
 
 from crucible_lib.schemas.test_plan import (
     Observability,
-    PrometheusConfig,
     PrometheusMetric,
+    PrometheusSource,
     TestPlan,
 )
 
@@ -63,69 +63,98 @@ def test_prometheus_metric_requires_query():
 
 
 # ---------------------------------------------------------------------------
-# PrometheusConfig
+# PrometheusSource
 # ---------------------------------------------------------------------------
 
-def test_prometheus_config_minimal():
-    cfg = PrometheusConfig(url="http://prometheus:9090", metrics=_SAMPLE_METRICS)
-    assert cfg.url == "http://prometheus:9090"
-    assert len(cfg.metrics) == 2
-    assert cfg.resolution == 15
-    assert cfg.max_data_points == 500
+def test_prometheus_source_minimal():
+    src = PrometheusSource(name="engine", url="http://prometheus:9090", metrics=_SAMPLE_METRICS)
+    assert src.name == "engine"
+    assert src.url == "http://prometheus:9090"
+    assert len(src.metrics) == 2
+    assert src.resolution == 15
+    assert src.max_data_points == 500
 
 
-def test_prometheus_config_custom_resolution_and_max_data_points():
-    cfg = PrometheusConfig(
+def test_prometheus_source_custom_resolution_and_max_data_points():
+    src = PrometheusSource(
+        name="engine",
         url="http://prometheus:9090",
         metrics=_SAMPLE_METRICS,
         resolution=30,
         max_data_points=200,
     )
-    assert cfg.resolution == 30
-    assert cfg.max_data_points == 200
+    assert src.resolution == 30
+    assert src.max_data_points == 200
 
 
-def test_prometheus_config_requires_url():
+def test_prometheus_source_requires_name():
     with pytest.raises(ValidationError):
-        PrometheusConfig(metrics=_SAMPLE_METRICS)
+        PrometheusSource(url="http://prometheus:9090", metrics=_SAMPLE_METRICS)
 
 
-def test_prometheus_config_requires_metrics():
+def test_prometheus_source_requires_url():
     with pytest.raises(ValidationError):
-        PrometheusConfig(url="http://prometheus:9090")
+        PrometheusSource(name="engine", metrics=_SAMPLE_METRICS)
 
 
-def test_prometheus_config_rejects_empty_metrics():
+def test_prometheus_source_requires_metrics():
     with pytest.raises(ValidationError):
-        PrometheusConfig(url="http://prometheus:9090", metrics=[])
+        PrometheusSource(name="engine", url="http://prometheus:9090")
 
 
-def test_prometheus_config_rejects_zero_resolution():
+def test_prometheus_source_rejects_empty_metrics():
     with pytest.raises(ValidationError):
-        PrometheusConfig(url="http://prometheus:9090", metrics=_SAMPLE_METRICS, resolution=0)
+        PrometheusSource(name="engine", url="http://prometheus:9090", metrics=[])
 
 
-def test_prometheus_config_rejects_zero_max_data_points():
+def test_prometheus_source_rejects_zero_resolution():
     with pytest.raises(ValidationError):
-        PrometheusConfig(url="http://prometheus:9090", metrics=_SAMPLE_METRICS, max_data_points=0)
+        PrometheusSource(name="engine", url="http://prometheus:9090", metrics=_SAMPLE_METRICS, resolution=0)
+
+
+def test_prometheus_source_rejects_zero_max_data_points():
+    with pytest.raises(ValidationError):
+        PrometheusSource(name="engine", url="http://prometheus:9090", metrics=_SAMPLE_METRICS, max_data_points=0)
 
 
 # ---------------------------------------------------------------------------
 # Observability
 # ---------------------------------------------------------------------------
 
-def test_observability_defaults_to_none():
+def test_observability_defaults_to_empty_sources():
     obs = Observability()
-    assert obs.prometheus is None
+    assert obs.prometheus_sources == []
 
 
-def test_observability_with_prometheus():
-    obs = Observability(prometheus={
-        "url": "http://prom:9090",
-        "metrics": [{"name": "qps", "query": "sum(rate(x[1m]))"}],
-    })
-    assert obs.prometheus.url == "http://prom:9090"
-    assert len(obs.prometheus.metrics) == 1
+def test_observability_with_prometheus_sources():
+    obs = Observability(prometheus_sources=[
+        {
+            "name": "engine",
+            "url": "http://prom:9090",
+            "metrics": [{"name": "qps", "query": "sum(rate(x[1m]))"}],
+        },
+    ])
+    assert len(obs.prometheus_sources) == 1
+    assert obs.prometheus_sources[0].name == "engine"
+    assert obs.prometheus_sources[0].url == "http://prom:9090"
+
+
+def test_observability_with_multiple_sources():
+    obs = Observability(prometheus_sources=[
+        {
+            "name": "engine",
+            "url": "http://prom-engine:9090",
+            "metrics": [{"name": "qps", "query": "sum(rate(x[1m]))"}],
+        },
+        {
+            "name": "infra",
+            "url": "http://prom-infra:9090",
+            "metrics": [{"name": "cpu", "query": "avg(rate(node_cpu[1m]))"}],
+        },
+    ])
+    assert len(obs.prometheus_sources) == 2
+    assert obs.prometheus_sources[0].name == "engine"
+    assert obs.prometheus_sources[1].name == "infra"
 
 
 # ---------------------------------------------------------------------------
@@ -138,62 +167,85 @@ def test_plan_without_observability():
     assert plan.test_environment.observability is None
 
 
-def test_plan_with_observability_prometheus():
+def test_plan_with_observability_prometheus_sources():
     plan = TestPlan.model_validate(_make_plan(
         observability={
-            "prometheus": {
-                "url": "http://prometheus:9090",
-                "metrics": _SAMPLE_METRICS,
-            },
+            "prometheus_sources": [
+                {
+                    "name": "engine",
+                    "url": "http://prometheus:9090",
+                    "metrics": _SAMPLE_METRICS,
+                },
+            ],
         },
     ))
-    prom = plan.test_environment.observability.prometheus
-    assert prom.url == "http://prometheus:9090"
-    assert len(prom.metrics) == 2
-    assert prom.metrics[0].name == "cluster_qps"
-    assert prom.resolution == 15
-    assert prom.max_data_points == 500
+    sources = plan.test_environment.observability.prometheus_sources
+    assert len(sources) == 1
+    assert sources[0].name == "engine"
+    assert sources[0].url == "http://prometheus:9090"
+    assert len(sources[0].metrics) == 2
+    assert sources[0].metrics[0].name == "cluster_qps"
+    assert sources[0].resolution == 15
+    assert sources[0].max_data_points == 500
 
 
 def test_plan_with_custom_resolution():
     plan = TestPlan.model_validate(_make_plan(
         observability={
-            "prometheus": {
-                "url": "http://prometheus:9090",
-                "metrics": _SAMPLE_METRICS,
-                "resolution": 30,
-                "max_data_points": 1000,
-            },
+            "prometheus_sources": [
+                {
+                    "name": "engine",
+                    "url": "http://prometheus:9090",
+                    "metrics": _SAMPLE_METRICS,
+                    "resolution": 30,
+                    "max_data_points": 1000,
+                },
+            ],
         },
     ))
-    prom = plan.test_environment.observability.prometheus
-    assert prom.resolution == 30
-    assert prom.max_data_points == 1000
+    src = plan.test_environment.observability.prometheus_sources[0]
+    assert src.resolution == 30
+    assert src.max_data_points == 1000
 
 
 def test_plan_with_empty_observability():
     """observability: {} is valid — no monitoring tools configured."""
     plan = TestPlan.model_validate(_make_plan(observability={}))
     assert plan.test_environment.observability is not None
-    assert plan.test_environment.observability.prometheus is None
+    assert plan.test_environment.observability.prometheus_sources == []
 
 
-def test_plan_with_prometheus_missing_url_rejects():
+def test_plan_with_prometheus_source_missing_name_rejects():
     with pytest.raises(ValidationError):
         TestPlan.model_validate(_make_plan(
-            observability={"prometheus": {"metrics": _SAMPLE_METRICS}},
+            observability={"prometheus_sources": [
+                {"url": "http://prometheus:9090", "metrics": _SAMPLE_METRICS},
+            ]},
         ))
 
 
-def test_plan_with_prometheus_missing_metrics_rejects():
+def test_plan_with_prometheus_source_missing_url_rejects():
     with pytest.raises(ValidationError):
         TestPlan.model_validate(_make_plan(
-            observability={"prometheus": {"url": "http://prometheus:9090"}},
+            observability={"prometheus_sources": [
+                {"name": "engine", "metrics": _SAMPLE_METRICS},
+            ]},
         ))
 
 
-def test_plan_with_prometheus_empty_metrics_rejects():
+def test_plan_with_prometheus_source_missing_metrics_rejects():
     with pytest.raises(ValidationError):
         TestPlan.model_validate(_make_plan(
-            observability={"prometheus": {"url": "http://prometheus:9090", "metrics": []}},
+            observability={"prometheus_sources": [
+                {"name": "engine", "url": "http://prometheus:9090"},
+            ]},
+        ))
+
+
+def test_plan_with_prometheus_source_empty_metrics_rejects():
+    with pytest.raises(ValidationError):
+        TestPlan.model_validate(_make_plan(
+            observability={"prometheus_sources": [
+                {"name": "engine", "url": "http://prometheus:9090", "metrics": []},
+            ]},
         ))

@@ -54,15 +54,21 @@ def register_tools(mcp: FastMCP) -> None:
                 - fixture_id: my-fixture
                   table: my_table
               observability:                  # optional — target engine monitoring
-                prometheus:
-                  url: "http://prometheus:9090"  # Prometheus HTTP API base URL
-                  metrics:                    # required when prometheus is set
-                    - name: "cluster_qps"     # user-chosen label for the metric
-                      query: "sum(rate(doris_be_query_total{job='doris-be'}[1m]))"
-                    - name: "avg_memory"
-                      query: "avg(doris_be_mem_usage_bytes{job='doris-be'})"
-                  resolution: 15              # optional, min step in seconds (default: 15)
-                  max_data_points: 500        # optional, max points per metric (default: 500)
+                prometheus_sources:           # list of named Prometheus sources
+                  - name: engine              # user-chosen label for this source
+                    url: "http://prometheus:9090"
+                    metrics:                  # at least one metric required per source
+                      - name: "cluster_qps"
+                        query: "sum(rate(doris_be_query_total{job='doris-be'}[1m]))"
+                      - name: "avg_memory"
+                        query: "avg(doris_be_mem_usage_bytes{job='doris-be'})"
+                    resolution: 15            # optional, min step in seconds (default: 15)
+                    max_data_points: 500      # optional, max points per metric (default: 500)
+                  - name: infra               # second source for infrastructure metrics
+                    url: "http://prom-infra:9090"
+                    metrics:
+                      - name: "cpu_usage"
+                        query: "avg(rate(node_cpu_seconds_total{mode!='idle'}[1m]))"
 
             execution:
               executor: k6                    # "k6" or "locust"
@@ -73,9 +79,10 @@ def register_tools(mcp: FastMCP) -> None:
               workload:
                 - workload_id: my-workload    # references uploaded workload file
 
-        The ``observability.prometheus`` section tells the worker which
-        Prometheus instance scrapes the target engine (e.g. Doris BE) and
-        which metrics to collect during the test.  Each metric entry has:
+        The ``observability.prometheus_sources`` section tells the worker which
+        Prometheus instances to query after the test completes.  Each source has
+        a user-chosen **name** and a **url** pointing at a Prometheus HTTP API.
+        Each metric entry has:
 
         - **name**: a user-chosen label used in result output
         - **query**: a raw PromQL expression; the worker passes it directly to
@@ -108,7 +115,7 @@ def register_tools(mcp: FastMCP) -> None:
         """Validates and uploads a test plan to Crucible without starting a run.
 
         *plan_yaml* is the full YAML test plan string. See ``validate_test_plan``
-        for the complete schema, including the optional ``observability.prometheus``
+        for the complete schema, including the optional ``observability.prometheus_sources``
         section for collecting target engine metrics during the test.
 
         The plan is stored under the given *name* and can be reused for
@@ -141,7 +148,7 @@ def register_tools(mcp: FastMCP) -> None:
         K6_PROMETHEUS_RW_SERVER_URL into the plan environment if configured.
 
         *plan_yaml* is the full YAML test plan string. See ``validate_test_plan``
-        for the complete schema, including the optional ``observability.prometheus``
+        for the complete schema, including the optional ``observability.prometheus_sources``
         section for collecting target engine metrics during the test.
         *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
@@ -242,6 +249,31 @@ def register_tools(mcp: FastMCP) -> None:
         except CrucibleError as exc:
             if exc.status_code == 404:
                 return {"error": f"Run '{run_id}' not found."}
+            return {"error": exc.detail}
+
+    @mcp.tool()
+    async def get_test_results(run_id: str) -> dict:
+        """Returns structured test results for a completed run.
+
+        The response contains two sections:
+
+        - **k6**: per-metric summary stats (count, min, max, avg, med, p90, p95, p99)
+          parsed from k6 CSV output.
+        - **observability**: time-series data from Prometheus sources defined in
+          the test plan's ``observability.prometheus_sources`` section.
+
+        Also includes ``collection_error`` (null on success, or a string describing
+        what failed during result collection).
+
+        Returns 409 if the run is still in progress (PENDING, WAITING_ROOM, EXECUTING).
+        """
+        try:
+            return await client.get_run_results(run_id)
+        except CrucibleError as exc:
+            if exc.status_code == 404:
+                return {"error": f"Run '{run_id}' not found."}
+            if exc.status_code == 409:
+                return {"error": exc.detail}
             return {"error": exc.detail}
 
     @mcp.tool()

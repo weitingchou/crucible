@@ -32,7 +32,8 @@ class PrometheusMetric(BaseModel):
     query: str
 
 
-class PrometheusConfig(BaseModel):
+class PrometheusSource(BaseModel):
+    name: str
     url: str
     metrics: list[PrometheusMetric] = Field(..., min_length=1)
     resolution: int = Field(default=15, gt=0, description="Minimum step in seconds")
@@ -40,7 +41,7 @@ class PrometheusConfig(BaseModel):
 
 
 class Observability(BaseModel):
-    prometheus: PrometheusConfig | None = None
+    prometheus_sources: list[PrometheusSource] = Field(default_factory=list)
 
 
 class TestEnvironment(BaseModel):

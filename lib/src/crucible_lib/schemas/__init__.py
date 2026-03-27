@@ -1,5 +1,5 @@
 from .cluster_spec import ClusterSpec, DorisClusterSpec, NodeSpec, get_cluster_size
-from .test_plan import Observability, PrometheusConfig, PrometheusMetric, TestPlan
+from .test_plan import Observability, PrometheusMetric, PrometheusSource, TestPlan
 from .workload import Workload, WorkloadQuery, parse_workload, validate_workload
 
 __all__ = [
@@ -7,7 +7,7 @@ __all__ = [
     "DorisClusterSpec",
     "NodeSpec",
     "Observability",
-    "PrometheusConfig",
+    "PrometheusSource",
     "PrometheusMetric",
     "TestPlan",
     "Workload",

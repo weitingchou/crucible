@@ -13,6 +13,7 @@ from worker.db import (
     update_run_status,
 )
 from worker.driver_manager.k6_manager import spawn_k6, wait_and_teardown
+from worker.metrics_collector import collect_and_store
 
 
 @app.task(bind=True, name="worker.tasks.executor.k6_executor_task")
@@ -116,11 +117,11 @@ def k6_executor_task(
             )
         return {"status": "failed", "error": error_msg}
 
-    # ── 7. Mark completion ───────────────────────────────────────────────────
-    # For inter-node mode, only the last executor to finish marks the run as
-    # COMPLETED. For intra-node mode (single executor), always mark complete.
+    # ── 7. Collect results and mark completion ───────────────────────────────
+    # For inter-node mode, only the last executor to finish collects results
+    # and marks the run as COMPLETED. For intra-node mode, always collect.
     if mode == "intra_node" or increment_completed_and_check(run_id):
-        update_run_status(run_id, "COMPLETED", set_completed_at=True)
+        collect_and_store(run_id, plan, local_instances)
 
     return {"status": "completed", "mode": mode, "instances_run": local_instances}
 

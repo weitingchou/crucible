@@ -164,19 +164,21 @@ def test_k6_timeout_includes_timed_out_flag(
 
 
 # ---------------------------------------------------------------------------
-# k6 success → COMPLETED
+# k6 success → collect_and_store → COMPLETED
 # ---------------------------------------------------------------------------
 
+@patch("worker.tasks.executor.collect_and_store")
 @patch("worker.tasks.executor.update_run_status")
 @patch("worker.tasks.executor.wait_and_teardown")
 @patch("worker.tasks.executor.spawn_k6")
 @patch("worker.tasks.executor._download_sql_fixtures")
 @patch("worker.tasks.executor._upload_to_s3")
 @patch("worker.tasks.executor._cleanup")
-def test_k6_success_marks_run_as_completed(
-    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait, mock_status
+def test_k6_success_calls_collect_and_store(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
 ):
-    """All k6 instances exit 0 → run transitions to COMPLETED."""
+    """All k6 instances exit 0 → collect_and_store is called (handles COLLECTING → COMPLETED)."""
     mock_download.return_value = ["/tmp/test-wl"]
     mock_spawn.return_value = _mock_process(returncode=0)
     mock_wait.return_value = [_k6_result(0)]
@@ -184,8 +186,7 @@ def test_k6_success_marks_run_as_completed(
     result = k6_executor_task.run(_make_plan(), "run-ok", "0%:100%", 1)
 
     assert result["status"] == "completed"
-    mock_status.assert_called_once()
-    assert mock_status.call_args[0][1] == "COMPLETED"
+    mock_collect.assert_called_once_with("run-ok", _make_plan(), 1)
 
 
 # ---------------------------------------------------------------------------

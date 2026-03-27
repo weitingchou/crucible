@@ -510,3 +510,53 @@ async def test_list_test_runs_catches_error(mcp_app):
         mock.side_effect = CrucibleError(500, "Internal error")
         result = await fn("")
     assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# get_test_results
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_test_results_returns_results(mcp_app):
+    fn = _get_tool(mcp_app, "get_test_results")
+    body = {
+        "run_id": "r1",
+        "status": "COMPLETED",
+        "collected_at": "2025-03-15T14:35:00Z",
+        "collection_error": None,
+        "k6": {"metrics": [{"name": "sql_duration_Q1", "type": "trend", "stats": {"count": 100}}]},
+        "observability": {"sources": []},
+    }
+    with patch("crucible_mcp.tools.client.get_run_results", new_callable=AsyncMock) as mock:
+        mock.return_value = body
+        result = await fn("r1")
+    assert result["status"] == "COMPLETED"
+    assert result["k6"]["metrics"][0]["name"] == "sql_duration_Q1"
+    mock.assert_awaited_once_with("r1")
+
+
+@pytest.mark.asyncio
+async def test_get_test_results_not_found(mcp_app):
+    fn = _get_tool(mcp_app, "get_test_results")
+    with patch("crucible_mcp.tools.client.get_run_results", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(404, "Run 'bad' not found.")
+        result = await fn("bad")
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_test_results_409_not_ready(mcp_app):
+    fn = _get_tool(mcp_app, "get_test_results")
+    with patch("crucible_mcp.tools.client.get_run_results", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(409, "Results not yet available (status=EXECUTING).")
+        result = await fn("r1")
+    assert "not yet available" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_test_results_server_error(mcp_app):
+    fn = _get_tool(mcp_app, "get_test_results")
+    with patch("crucible_mcp.tools.client.get_run_results", new_callable=AsyncMock) as mock:
+        mock.side_effect = CrucibleError(500, "Internal error")
+        result = await fn("r1")
+    assert "error" in result

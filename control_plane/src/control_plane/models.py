@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -157,4 +157,53 @@ class RunDetail(BaseModel):
 
 class ListRunsResponse(BaseModel):
     runs: list[RunDetail]
+
+
+# ── Test results models ─────────────────────────────────────────────────────
+
+class K6MetricStats(BaseModel):
+    count: int
+    min: float | None = None
+    max: float | None = None
+    avg: float | None = None
+    med: float | None = None
+    p90: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+    rate: float | None = None
+
+
+class K6Metric(BaseModel):
+    name: str
+    type: str
+    stats: K6MetricStats
+
+
+class K6Results(BaseModel):
+    metrics: list[K6Metric] = Field(default_factory=list)
+
+
+class ObservabilityTimeSeries(BaseModel):
+    name: str
+    query: str
+    values: list[list] = Field(default_factory=list)
+
+
+class ObservabilitySourceResult(BaseModel):
+    name: str
+    url: str
+    metrics: list[ObservabilityTimeSeries]
+
+
+class ObservabilityResults(BaseModel):
+    sources: list[ObservabilitySourceResult] = Field(default_factory=list)
+
+
+class TestRunResults(BaseModel):
+    run_id: str
+    status: str
+    collected_at: str | None = None
+    collection_error: str | None = None
+    k6: K6Results = Field(default_factory=K6Results)
+    observability: ObservabilityResults = Field(default_factory=ObservabilityResults)
 

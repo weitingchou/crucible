@@ -349,3 +349,45 @@ async def test_list_runs_no_label_sends_empty_params():
         from crucible_mcp.client import list_runs
         await list_runs()
     assert capturing.last_get_kwargs.get("params", {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# get_run_results
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_run_results_returns_dict():
+    body = {
+        "run_id": "r1",
+        "status": "COMPLETED",
+        "collected_at": "2025-03-15T14:35:00Z",
+        "collection_error": None,
+        "k6": {"metrics": [{"name": "sql_duration_Q1", "type": "trend", "stats": {"count": 100}}]},
+        "observability": {"sources": []},
+    }
+    resp = _mock_response(200, body)
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import get_run_results
+        result = await get_run_results("r1")
+    assert result["status"] == "COMPLETED"
+    assert result["k6"]["metrics"][0]["name"] == "sql_duration_Q1"
+
+
+@pytest.mark.asyncio
+async def test_get_run_results_raises_on_404():
+    resp = _mock_response(404, {"detail": "Run 'bad' not found."})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import get_run_results
+        with pytest.raises(CrucibleError) as exc_info:
+            await get_run_results("bad")
+        assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_run_results_raises_on_409():
+    resp = _mock_response(409, {"detail": "Results not yet available (status=EXECUTING)."})
+    with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
+        from crucible_mcp.client import get_run_results
+        with pytest.raises(CrucibleError) as exc_info:
+            await get_run_results("r1")
+        assert exc_info.value.status_code == 409

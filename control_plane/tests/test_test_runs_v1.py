@@ -719,3 +719,147 @@ def test_list_runs_includes_all_metadata_fields():
     assert run["started_at"] is not None
     assert run["completed_at"] is not None
     assert run["error_detail"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/test-runs/{run_id}/results
+# ---------------------------------------------------------------------------
+
+_SAMPLE_RESULTS_JSON = {
+    "run_id": "r1",
+    "collected_at": "2025-01-01T00:05:00+00:00",
+    "collection_error": None,
+    "k6": {
+        "metrics": [
+            {
+                "name": "sql_duration_Q1",
+                "type": "trend",
+                "stats": {
+                    "count": 100, "min": 1.0, "max": 50.0,
+                    "avg": 10.0, "med": 8.0, "p90": 30.0,
+                    "p95": 40.0, "p99": 48.0, "rate": None,
+                },
+            },
+        ],
+    },
+    "observability": {
+        "sources": [
+            {
+                "name": "engine",
+                "url": "http://prom:9090",
+                "metrics": [
+                    {"name": "cluster_qps", "query": "sum(rate(x[1m]))", "values": [[1710510600, "245.3"]]},
+                ],
+            },
+        ],
+    },
+}
+
+
+def _mock_s3_get_results(results_json):
+    """Create a mock S3 client that returns results_json for get_object."""
+    import json as _json
+    mock_s3 = MagicMock()
+    body_bytes = _json.dumps(results_json).encode()
+    mock_s3.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=body_bytes)),
+    }
+    return mock_s3
+
+
+def test_results_returns_200_for_completed_run():
+    mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_db.return_value = _make_run_row("r1", status="COMPLETED")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == "r1"
+    assert body["status"] == "COMPLETED"
+    assert body["collection_error"] is None
+    assert len(body["k6"]["metrics"]) == 1
+    assert body["k6"]["metrics"][0]["name"] == "sql_duration_Q1"
+    assert len(body["observability"]["sources"]) == 1
+
+
+def test_results_returns_404_for_unknown_run():
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db:
+        mock_db.return_value = None
+        response = client.get("/v1/test-runs/nonexistent/results")
+    assert response.status_code == 404
+
+
+def test_results_returns_409_for_pending_run():
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db:
+        mock_db.return_value = _make_run_row("r1", status="PENDING")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 409
+
+
+def test_results_returns_409_for_executing_run():
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db:
+        mock_db.return_value = _make_run_row("r1", status="EXECUTING")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 409
+
+
+def test_results_returns_200_for_failed_run():
+    """FAILED is a terminal status — results should still be returned."""
+    mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_db.return_value = _make_run_row("r1", status="FAILED")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    assert response.json()["status"] == "FAILED"
+
+
+def test_results_returns_409_for_waiting_room_run():
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db:
+        mock_db.return_value = _make_run_row("r1", status="WAITING_ROOM")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 409
+
+
+def test_results_handles_missing_s3_file():
+    """COLLECTING run with no results.json yet → empty results with error message."""
+    mock_s3 = MagicMock()
+    error_response = {"Error": {"Code": "NoSuchKey", "Message": "Not found"}}
+    mock_s3.get_object.side_effect = ClientError(error_response, "GetObject")
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_db.return_value = _make_run_row("r1", status="COLLECTING")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "COLLECTING"
+    assert "not yet available" in body["collection_error"]
+    assert body["k6"]["metrics"] == []
+    assert body["observability"]["sources"] == []
+
+
+def test_results_includes_collection_error():
+    """Results with collection_error should surface it in the response."""
+    results_with_error = {
+        **_SAMPLE_RESULTS_JSON,
+        "collection_error": "Prometheus source 'infra' unreachable",
+    }
+    mock_s3 = _mock_s3_get_results(results_with_error)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_db.return_value = _make_run_row("r1", status="COMPLETED")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    body = response.json()
+    assert "unreachable" in body["collection_error"]
+    # k6 metrics should still be present
+    assert len(body["k6"]["metrics"]) == 1

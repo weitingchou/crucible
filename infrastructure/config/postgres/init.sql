@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS waiting_room (
 -- Test run lifecycle tracking.
 -- Inserted by the Control Plane at dispatch time (status=PENDING).
 -- Updated by the Celery worker at each lifecycle transition.
--- Status enum: PENDING -> WAITING_ROOM -> EXECUTING -> COMPLETED | FAILED | STOPPING
+-- Status enum: PENDING -> WAITING_ROOM -> EXECUTING -> COLLECTING -> COMPLETED | FAILED | STOPPING
 CREATE TABLE IF NOT EXISTS test_runs (
     run_id        TEXT        PRIMARY KEY,
     task_id       TEXT,                            -- Celery AsyncResult ID
