@@ -255,17 +255,70 @@ def register_tools(mcp: FastMCP) -> None:
     async def get_test_results(run_id: str) -> dict:
         """Returns structured test results for a completed run.
 
-        The response contains two sections:
+        The response merges k6 driver metrics and Prometheus observability
+        data collected after the test finished.  Returns 409 if the run is
+        still in progress (PENDING, WAITING_ROOM, EXECUTING).
 
-        - **k6**: per-metric summary stats (count, min, max, avg, med, p90, p95, p99)
-          parsed from k6 CSV output.
-        - **observability**: time-series data from Prometheus sources defined in
-          the test plan's ``observability.prometheus_sources`` section.
+        Response structure::
 
-        Also includes ``collection_error`` (null on success, or a string describing
-        what failed during result collection).
+            {
+              "run_id": "my-plan_20250315-1430_a1b2c3d4",
+              "status": "COMPLETED",
+              "collected_at": "2025-03-15T14:35:00+00:00",
+              "collection_error": null,      # null on success, or error string
+              "k6": {
+                "metrics": [
+                  {
+                    "name": "sql_duration_TopProducts",
+                    "type": "trend",
+                    "stats": {
+                      "count": 1500,
+                      "min": 1.2,
+                      "max": 245.6,
+                      "avg": 23.4,
+                      "med": 18.7,
+                      "p90": 45.2,
+                      "p95": 67.8,
+                      "p99": 123.4,
+                      "rate": null
+                    }
+                  }
+                ]
+              },
+              "observability": {
+                "sources": [
+                  {
+                    "name": "engine",
+                    "url": "http://prometheus:9090",
+                    "metrics": [
+                      {
+                        "name": "cluster_qps",
+                        "query": "sum(rate(doris_be_query_total[1m]))",
+                        "values": [
+                          [1710510600, "245.3"],
+                          [1710510615, "312.7"]
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
 
-        Returns 409 if the run is still in progress (PENDING, WAITING_ROOM, EXECUTING).
+        **k6.metrics**: one entry per k6 metric parsed from CSV output.
+        Trend metrics include percentile stats; counter metrics include rate.
+        Metric names match the ``-- @name`` annotations in the workload SQL
+        file (e.g. ``sql_duration_TopProducts``).
+
+        **observability.sources**: one entry per Prometheus source defined in
+        the test plan's ``observability.prometheus_sources``.  Each metric's
+        ``values`` is a list of ``[unix_timestamp, string_value]`` pairs
+        returned by Prometheus ``query_range``.
+
+        **collection_error**: ``null`` when both k6 CSV parsing and all
+        Prometheus queries succeeded.  On partial failure (e.g. one
+        Prometheus source unreachable), the reachable data is still
+        returned and this field describes what failed.
         """
         try:
             return await client.get_run_results(run_id)
