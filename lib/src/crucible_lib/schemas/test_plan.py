@@ -27,10 +27,16 @@ class FixtureItem(BaseModel):
     table: str
 
 
+class PrometheusMetric(BaseModel):
+    name: str
+    query: str
+
+
 class PrometheusConfig(BaseModel):
     url: str
-    job: str
-    labels: dict[str, str] = Field(default_factory=dict)
+    metrics: list[PrometheusMetric] = Field(..., min_length=1)
+    resolution: int = Field(default=15, gt=0, description="Minimum step in seconds")
+    max_data_points: int = Field(default=500, gt=0, description="Max data points per metric")
 
 
 class Observability(BaseModel):
