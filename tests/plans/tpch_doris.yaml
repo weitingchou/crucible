@@ -21,6 +21,12 @@ test_environment:
       host: doris-fe:9030
       username: root
       password: ""
+  observability:
+    prometheus:
+      url: "http://localhost:9090"
+      job: "doris-be"
+      labels:
+        cluster: "local-dev"
   fixtures:
     - fixture_id: tpch-sf001-customer
       table: customer

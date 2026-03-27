@@ -27,11 +27,22 @@ class FixtureItem(BaseModel):
     table: str
 
 
+class PrometheusConfig(BaseModel):
+    url: str
+    job: str
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class Observability(BaseModel):
+    prometheus: PrometheusConfig | None = None
+
+
 class TestEnvironment(BaseModel):
     env_type: Literal["long-lived", "disposable"]
     component_spec: ComponentSpec
     target_db: str
     fixtures: list[FixtureItem] = Field(default_factory=list)
+    observability: Observability | None = None
 
     @model_validator(mode="after")
     def _cluster_info_required_for_long_lived(self) -> "TestEnvironment":
