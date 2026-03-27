@@ -35,6 +35,54 @@ def register_tools(mcp: FastMCP) -> None:
 
         Returns {"valid": true} on success, or {"valid": false, "errors": [...]} with
         field paths and messages on failure. Does not make any network calls.
+
+        Test plan YAML structure::
+
+            test_metadata:
+              run_label: "my-test"            # display label for the run
+
+            test_environment:
+              env_type: long-lived            # "long-lived" or "disposable"
+              target_db: my_database          # database name on the SUT
+              component_spec:
+                type: doris                   # SUT engine type
+                cluster_info:                 # required for long-lived env_type
+                  host: "doris-fe:9030"
+                  username: root
+                  password: ""
+              fixtures:                       # optional list of fixture datasets
+                - fixture_id: my-fixture
+                  table: my_table
+              observability:                  # optional — target engine monitoring
+                prometheus:
+                  url: "http://prometheus:9090"  # Prometheus HTTP API base URL
+                  metrics:                    # required when prometheus is set
+                    - name: "cluster_qps"     # user-chosen label for the metric
+                      query: "sum(rate(doris_be_query_total{job='doris-be'}[1m]))"
+                    - name: "avg_memory"
+                      query: "avg(doris_be_mem_usage_bytes{job='doris-be'})"
+                  resolution: 15              # optional, min step in seconds (default: 15)
+                  max_data_points: 500        # optional, max points per metric (default: 500)
+
+            execution:
+              executor: k6                    # "k6" or "locust"
+              scaling_mode: intra_node        # "intra_node" or "inter_node"
+              concurrency: 10                 # number of virtual users
+              ramp_up: 30s                    # ramp-up duration
+              hold_for: 5m                    # steady-state duration
+              workload:
+                - workload_id: my-workload    # references uploaded workload file
+
+        The ``observability.prometheus`` section tells the worker which
+        Prometheus instance scrapes the target engine (e.g. Doris BE) and
+        which metrics to collect during the test.  Each metric entry has:
+
+        - **name**: a user-chosen label used in result output
+        - **query**: a raw PromQL expression; the worker passes it directly to
+          ``/api/v1/query_range`` scoped to the test's time window
+
+        ``resolution`` and ``max_data_points`` control query step size:
+        ``step = max(resolution, test_duration_seconds // max_data_points)``.
         """
         try:
             raw = yaml.safe_load(plan_yaml)
@@ -58,6 +106,10 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     async def upload_test_plan(plan_yaml: str, name: str) -> dict:
         """Validates and uploads a test plan to Crucible without starting a run.
+
+        *plan_yaml* is the full YAML test plan string. See ``validate_test_plan``
+        for the complete schema, including the optional ``observability.prometheus``
+        section for collecting target engine metrics during the test.
 
         The plan is stored under the given *name* and can be reused for
         multiple test runs via ``submit_test_run`` or ``trigger_run_by_plan``.
@@ -88,6 +140,9 @@ def register_tools(mcp: FastMCP) -> None:
         Validates the plan locally first. If valid, automatically injects
         K6_PROMETHEUS_RW_SERVER_URL into the plan environment if configured.
 
+        *plan_yaml* is the full YAML test plan string. See ``validate_test_plan``
+        for the complete schema, including the optional ``observability.prometheus``
+        section for collecting target engine metrics during the test.
         *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
         *cluster_spec* is an optional cluster topology dict (e.g.
