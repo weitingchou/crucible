@@ -26,11 +26,16 @@ def collect_and_store(
     run_id: str,
     plan: dict,
     local_instances: int,
+    abort_reason: str | None = None,
 ) -> None:
     """Parse k6 CSVs, query Prometheus sources, upload results.json to S3.
 
     On any error the run still moves to COMPLETED with ``collection_error``
     recorded in the JSON.  Only k6 execution failures mark a run as FAILED.
+
+    If *abort_reason* is set (e.g. SUT failure detection), it is included in
+    the results JSON so consumers can distinguish a normal completion from an
+    early abort with partial results.
     """
     update_run_status(run_id, "COLLECTING")
 
@@ -63,6 +68,7 @@ def collect_and_store(
         "run_id": run_id,
         "collected_at": datetime.now(timezone.utc).isoformat(),
         "collection_error": collection_error,
+        "abort_reason": abort_reason,
         "k6": {"metrics": k6_metrics},
         "observability": {"sources": obs_sources},
     }

@@ -94,8 +94,13 @@ def k6_executor_task(
     _cleanup(sql_paths, run_id, local_instances)
 
     # ── 6. Check for k6 failures ─────────────────────────────────────────────
+    # Exit code 99 = k6 threshold violation (SUT failure detected).
+    # These are graceful aborts — collect partial results → COMPLETED.
+    # Any other non-zero exit code is a real failure → FAILED.
+    threshold_aborted = any(r.returncode == 99 for r in results)
     failed = [
-        (i, r) for i, r in enumerate(results) if r.returncode != 0
+        (i, r) for i, r in enumerate(results)
+        if r.returncode != 0 and r.returncode != 99
     ]
     if failed:
         parts = []
@@ -120,8 +125,12 @@ def k6_executor_task(
     # ── 7. Collect results and mark completion ───────────────────────────────
     # For inter-node mode, only the last executor to finish collects results
     # and marks the run as COMPLETED. For intra-node mode, always collect.
+    abort_reason = None
+    if threshold_aborted:
+        abort_reason = "SUT failure detected: query error rate exceeded threshold"
+
     if mode == "intra_node" or increment_completed_and_check(run_id):
-        collect_and_store(run_id, plan, local_instances)
+        collect_and_store(run_id, plan, local_instances, abort_reason=abort_reason)
 
     return {"status": "completed", "mode": mode, "instances_run": local_instances}
 

@@ -96,3 +96,49 @@ def test_wait_and_teardown_handles_timeout():
     p.send_signal.assert_called_once()
     assert results[0].returncode == -15
     assert results[0].timed_out is True
+
+
+# ---------------------------------------------------------------------------
+# spawn_k6 — failure detection env vars
+# ---------------------------------------------------------------------------
+
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_spawn_k6_default_failure_detection(mock_popen):
+    """No failure_detection in plan → defaults: threshold=0.5, delay=10s."""
+    plan = _make_plan("doris-fe:9030")
+    spawn_k6("run-1", "0%:100%", 0, plan)
+
+    env = mock_popen.call_args.kwargs["env"]
+    assert env["K6_ERROR_RATE_THRESHOLD"] == "0.5"
+    assert env["K6_ERROR_ABORT_DELAY"] == "10s"
+    assert "K6_FAILURE_DETECTION_DISABLED" not in env
+
+
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_spawn_k6_custom_failure_detection(mock_popen):
+    """Custom failure_detection values are passed through."""
+    plan = _make_plan("doris-fe:9030")
+    plan["execution"]["failure_detection"] = {
+        "enabled": True,
+        "error_rate_threshold": 0.3,
+        "abort_delay": "30s",
+    }
+    spawn_k6("run-1", "0%:100%", 0, plan)
+
+    env = mock_popen.call_args.kwargs["env"]
+    assert env["K6_ERROR_RATE_THRESHOLD"] == "0.3"
+    assert env["K6_ERROR_ABORT_DELAY"] == "30s"
+    assert "K6_FAILURE_DETECTION_DISABLED" not in env
+
+
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_spawn_k6_failure_detection_disabled(mock_popen):
+    """enabled: false → K6_FAILURE_DETECTION_DISABLED=true, no threshold env vars."""
+    plan = _make_plan("doris-fe:9030")
+    plan["execution"]["failure_detection"] = {"enabled": False}
+    spawn_k6("run-1", "0%:100%", 0, plan)
+
+    env = mock_popen.call_args.kwargs["env"]
+    assert env["K6_FAILURE_DETECTION_DISABLED"] == "true"
+    assert "K6_ERROR_RATE_THRESHOLD" not in env
+    assert "K6_ERROR_ABORT_DELAY" not in env

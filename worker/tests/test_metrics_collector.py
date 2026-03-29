@@ -191,8 +191,29 @@ def test_collect_and_store_no_observability(mock_status, mock_parse, mock_upload
     results = mock_upload.call_args[0][1]
     assert results["run_id"] == "run-1"
     assert results["collection_error"] is None
+    assert results["abort_reason"] is None
     assert len(results["k6"]["metrics"]) == 1
     assert results["observability"]["sources"] == []
+
+
+@patch("worker.metrics_collector._upload_results_json")
+@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector.update_run_status")
+def test_collect_and_store_includes_abort_reason(mock_status, mock_parse, mock_upload):
+    """abort_reason is included in results JSON when set."""
+    mock_parse.return_value = [
+        {"name": "sql_duration_Q1", "type": "trend", "stats": {"count": 5}},
+    ]
+
+    plan = {"test_environment": {}, "execution": {}}
+    collect_and_store("run-abort", plan, 1, abort_reason="SUT failure detected: query error rate exceeded threshold")
+
+    mock_upload.assert_called_once()
+    results = mock_upload.call_args[0][1]
+    assert results["abort_reason"] == "SUT failure detected: query error rate exceeded threshold"
+    assert results["collection_error"] is None
+    # Still transitions to COMPLETED
+    assert mock_status.call_args_list[-1][0] == ("run-abort", "COMPLETED")
 
 
 @patch("worker.metrics_collector._upload_results_json")

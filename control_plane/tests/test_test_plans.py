@@ -104,6 +104,61 @@ def test_create_plan_rejects_missing_name_param():
     assert response.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# failure_detection schema validation
+# ---------------------------------------------------------------------------
+
+def test_create_plan_without_failure_detection(mock_save_plan):
+    """Omitting failure_detection is valid (backward compatible)."""
+    response = client.post("/test-plans?name=no-fd", json=VALID_PLAN)
+    assert response.status_code == 201
+
+
+def test_create_plan_with_failure_detection_defaults(mock_save_plan):
+    """failure_detection with empty object uses Pydantic defaults."""
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": {}}}
+    response = client.post("/test-plans?name=fd-defaults", json=plan)
+    assert response.status_code == 201
+
+
+def test_create_plan_with_custom_failure_detection(mock_save_plan):
+    """Custom threshold and delay values are accepted."""
+    fd = {"enabled": True, "error_rate_threshold": 0.3, "abort_delay": "30s"}
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": fd}}
+    response = client.post("/test-plans?name=fd-custom", json=plan)
+    assert response.status_code == 201
+
+
+def test_create_plan_with_failure_detection_disabled(mock_save_plan):
+    """enabled: false disables failure detection."""
+    fd = {"enabled": False}
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": fd}}
+    response = client.post("/test-plans?name=fd-off", json=plan)
+    assert response.status_code == 201
+
+
+def test_create_plan_rejects_zero_error_rate_threshold():
+    fd = {"error_rate_threshold": 0}
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": fd}}
+    response = client.post("/test-plans?name=bad", json=plan)
+    assert response.status_code == 422
+
+
+def test_create_plan_rejects_error_rate_threshold_above_one():
+    fd = {"error_rate_threshold": 1.5}
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": fd}}
+    response = client.post("/test-plans?name=bad", json=plan)
+    assert response.status_code == 422
+
+
+def test_create_plan_accepts_error_rate_threshold_at_one(mock_save_plan):
+    """error_rate_threshold=1.0 is valid (le=1.0 boundary)."""
+    fd = {"error_rate_threshold": 1.0}
+    plan = {**VALID_PLAN, "execution": {**VALID_PLAN["execution"], "failure_detection": fd}}
+    response = client.post("/test-plans?name=fd-one", json=plan)
+    assert response.status_code == 201
+
+
 def test_create_disposable_plan_without_cluster_info(mock_save_plan):
     """Disposable plans don't require cluster_info (it comes at run time)."""
     disposable = {

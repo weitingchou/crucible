@@ -25,7 +25,7 @@
 import sql from 'k6/x/sql';
 import driver from 'k6/x/sql/driver/mysql';
 import { check } from 'k6';
-import { Trend } from 'k6/metrics';
+import { Trend, Rate } from 'k6/metrics';
 
 // ── Connection setup (runs once per VU initialisation) ───────────────────────
 
@@ -50,6 +50,28 @@ queries.forEach(({ name }) => {
   trends[name] = new Trend(`sql_duration_${name}`, /* isTime= */ true);
 });
 
+// Aggregate error rate across all VUs — used by the threshold below to
+// abort early when the SUT (database) is unresponsive.
+const queryErrors = new Rate('query_errors');
+
+// ── Thresholds (SUT failure detection) ───────────────────────────────────────
+// If the query error rate exceeds the threshold after the initial delay window,
+// k6 aborts the run (exit code 99) so the executor can collect partial results
+// and mark the run as COMPLETED.
+const fdEnabled = __ENV.K6_FAILURE_DETECTION_DISABLED !== 'true';
+const errorThreshold = __ENV.K6_ERROR_RATE_THRESHOLD || '0.5';
+const abortDelay = __ENV.K6_ERROR_ABORT_DELAY || '10s';
+
+export const options = fdEnabled ? {
+  thresholds: {
+    query_errors: [{
+      threshold: `rate<${errorThreshold}`,
+      abortOnFail: true,
+      delayAbortEval: abortDelay,
+    }],
+  },
+} : {};
+
 // ── VU default function ───────────────────────────────────────────────────────
 
 export default function () {
@@ -60,8 +82,10 @@ export default function () {
     const rows = db.query(query.text);
     trends[query.name].add(Date.now() - start);
     check(rows, { [`${query.name} returned result`]: (r) => r !== null });
+    queryErrors.add(0);
   } catch (err) {
     console.error(`[${query.name}] failed: ${err}`);
+    queryErrors.add(1);
   }
 }
 

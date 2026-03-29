@@ -186,7 +186,97 @@ def test_k6_success_calls_collect_and_store(
     result = k6_executor_task.run(_make_plan(), "run-ok", "0%:100%", 1)
 
     assert result["status"] == "completed"
-    mock_collect.assert_called_once_with("run-ok", _make_plan(), 1)
+    mock_collect.assert_called_once_with("run-ok", _make_plan(), 1, abort_reason=None)
+
+
+# ---------------------------------------------------------------------------
+# k6 threshold abort (exit code 99) → COMPLETED with partial results
+# ---------------------------------------------------------------------------
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_k6_threshold_abort_collects_results_and_completes(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """k6 exits with code 99 (threshold violation) → collect_and_store with abort_reason, not FAILED."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.return_value = _mock_process(returncode=99)
+    mock_wait.return_value = [
+        _k6_result(returncode=99, stderr="threshold 'query_errors' crossed"),
+    ]
+
+    result = k6_executor_task.run(_make_plan(), "run-threshold", "0%:100%", 1)
+
+    assert result["status"] == "completed"
+    mock_collect.assert_called_once()
+    assert mock_collect.call_args[1]["abort_reason"] == \
+        "SUT failure detected: query error rate exceeded threshold"
+    # update_run_status should NOT have been called with FAILED
+    for call in mock_status.call_args_list:
+        assert call[0][1] != "FAILED"
+
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_k6_mixed_threshold_and_real_failure_marks_failed(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """One instance exits 99 (threshold) + another exits 1 (real error) → FAILED."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.side_effect = [_mock_process(99), _mock_process(1)]
+    mock_wait.return_value = [
+        _k6_result(returncode=99, stderr="threshold crossed"),
+        _k6_result(returncode=1, stderr="connection refused"),
+    ]
+
+    result = k6_executor_task.run(_make_plan(), "run-mixed", "0%:100%", 2)
+
+    assert result["status"] == "failed"
+    assert "instance 1 exited with code 1" in result["error"]
+    # Instance 0 (code 99) should NOT appear in the error
+    assert "instance 0" not in result["error"]
+    mock_collect.assert_not_called()
+
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_k6_all_instances_threshold_abort_multi(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """Multiple instances all exit 99 → COMPLETED with abort_reason (not FAILED)."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.side_effect = [_mock_process(99), _mock_process(99)]
+    mock_wait.return_value = [
+        _k6_result(returncode=99, stderr="threshold crossed"),
+        _k6_result(returncode=99, stderr="threshold crossed"),
+    ]
+
+    result = k6_executor_task.run(_make_plan(), "run-all-99", "0%:100%", 2)
+
+    assert result["status"] == "completed"
+    mock_collect.assert_called_once()
+    assert mock_collect.call_args[1]["abort_reason"] == \
+        "SUT failure detected: query error rate exceeded threshold"
+    for call in mock_status.call_args_list:
+        assert call[0][1] != "FAILED"
 
 
 # ---------------------------------------------------------------------------

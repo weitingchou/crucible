@@ -78,6 +78,18 @@ def register_tools(mcp: FastMCP) -> None:
               hold_for: 5m                    # steady-state duration
               workload:
                 - workload_id: my-workload    # references uploaded workload file
+              failure_detection:              # optional — SUT failure detection
+                enabled: true                 # optional (default: true)
+                error_rate_threshold: 0.5     # optional (default: 0.5), range (0.0, 1.0]
+                abort_delay: "10s"            # optional (default: "10s")
+
+        The ``failure_detection`` section configures automatic SUT failure
+        detection.  When enabled (the default), the k6 driver tracks a
+        ``query_errors`` Rate metric.  If the error rate exceeds
+        ``error_rate_threshold`` after the ``abort_delay`` grace period, k6
+        aborts gracefully and the run is marked COMPLETED with partial results.
+        Omit the section entirely to use defaults (enabled, 50% threshold, 10s
+        delay).  Set ``enabled: false`` to disable.
 
         The ``observability.prometheus_sources`` section tells the worker which
         Prometheus instances to query after the test completes.  Each source has

@@ -466,6 +466,203 @@ class TestArtifacts:
         assert body["artifacts"] == []
 
 
+# ---------------------------------------------------------------------------
+# Submit with failure_detection config
+# ---------------------------------------------------------------------------
+
+class TestSubmitWithFailureDetection:
+    """Verify that failure_detection config is accepted, persisted, and rejected when invalid."""
+
+    def test_submit_plan_with_failure_detection(self):
+        """Custom failure_detection config is accepted and persisted in S3."""
+        import yaml
+
+        plan_yaml = _load_plan_yaml()
+        raw = yaml.safe_load(plan_yaml)
+        raw["execution"]["failure_detection"] = {
+            "enabled": True,
+            "error_rate_threshold": 0.3,
+            "abort_delay": "30s",
+        }
+        modified_yaml = yaml.dump(raw)
+
+        plan_name = f"e2e-fd-custom-{_SESSION_TAG}"
+        plan_key = f"plans/{plan_name}"
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": modified_yaml,
+            "plan_name": plan_name,
+            "label": f"e2e-fd-{_SESSION_TAG}",
+        }, timeout=10)
+
+        assert resp.status_code == 200
+        run_id = resp.json()["run_id"]
+
+        # Verify failure_detection is preserved in the stored plan YAML
+        obj = _s3().get_object(Bucket=S3_BUCKET, Key=plan_key)
+        stored = yaml.safe_load(obj["Body"].read())
+        fd = stored["execution"]["failure_detection"]
+        assert fd["enabled"] is True
+        assert fd["error_rate_threshold"] == 0.3
+        assert fd["abort_delay"] == "30s"
+
+        _cleanup_run(run_id)
+        _cleanup_plan(plan_key)
+
+    def test_submit_plan_with_failure_detection_disabled(self):
+        """failure_detection with enabled: false is accepted."""
+        import yaml
+
+        plan_yaml = _load_plan_yaml()
+        raw = yaml.safe_load(plan_yaml)
+        raw["execution"]["failure_detection"] = {"enabled": False}
+        modified_yaml = yaml.dump(raw)
+
+        plan_name = f"e2e-fd-off-{_SESSION_TAG}"
+        plan_key = f"plans/{plan_name}"
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": modified_yaml,
+            "plan_name": plan_name,
+            "label": f"e2e-fd-off-{_SESSION_TAG}",
+        }, timeout=10)
+
+        assert resp.status_code == 200
+        run_id = resp.json()["run_id"]
+
+        _cleanup_run(run_id)
+        _cleanup_plan(plan_key)
+
+    def test_submit_rejects_invalid_failure_detection_threshold(self):
+        """error_rate_threshold out of range (0, 1.0] is rejected with 422."""
+        import yaml
+
+        plan_yaml = _load_plan_yaml()
+
+        # threshold = 0 → invalid (must be > 0)
+        raw = yaml.safe_load(plan_yaml)
+        raw["execution"]["failure_detection"] = {"error_rate_threshold": 0}
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": yaml.dump(raw),
+            "plan_name": f"e2e-fd-bad-{_SESSION_TAG}",
+        }, timeout=10)
+        assert resp.status_code == 422
+
+        # threshold = 1.5 → invalid (must be <= 1.0)
+        raw["execution"]["failure_detection"] = {"error_rate_threshold": 1.5}
+        resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+            "plan_yaml": yaml.dump(raw),
+            "plan_name": f"e2e-fd-bad2-{_SESSION_TAG}",
+        }, timeout=10)
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Results with abort_reason (SUT failure detection)
+# ---------------------------------------------------------------------------
+
+class TestResultsWithAbortReason:
+    """Verify that abort_reason flows through results.json → API for SUT failure aborts."""
+
+    def test_results_returns_abort_reason_for_sut_failure(self):
+        """COMPLETED run with abort_reason shows partial results and the reason."""
+        run_id = f"e2e-abort-reason-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                run_id, "task-ar", "e2e-plan", "plans/e2e-plan",
+                "abort-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2026-03-29T10:00:00Z",
+            "collection_error": None,
+            "abort_reason": "SUT failure detected: query error rate exceeded threshold",
+            "k6": {
+                "metrics": [
+                    {"name": "sql_duration_Q1", "type": "trend",
+                     "stats": {"count": 50, "min": 1.0, "max": 30.0, "avg": 8.0,
+                               "med": 6.0, "p90": 20.0, "p95": 25.0, "p99": 29.0}},
+                    {"name": "query_errors", "type": "trend",
+                     "stats": {"count": 120, "min": 0.0, "max": 1.0, "avg": 0.58,
+                               "med": 1.0, "p90": 1.0, "p95": 1.0, "p99": 1.0}},
+                ],
+            },
+            "observability": {"sources": []},
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "COMPLETED"
+            # Partial k6 results are present
+            metrics = body["k6"]["metrics"]
+            assert len(metrics) == 2
+            q1 = next(m for m in metrics if m["name"] == "sql_duration_Q1")
+            assert q1["stats"]["count"] == 50
+            # query_errors metric is present
+            qe = next(m for m in metrics if m["name"] == "query_errors")
+            assert qe["stats"]["avg"] == 0.58
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass
+
+    def test_results_returns_null_abort_reason_for_normal_completion(self):
+        """Normal COMPLETED run has no abort_reason."""
+        run_id = f"e2e-no-abort-{_SESSION_TAG}"
+        _pg_execute(
+            """INSERT INTO test_runs
+               (run_id, task_id, plan_name, plan_key, run_label, sut_type,
+                scaling_mode, status, completed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())""",
+            (
+                run_id, "task-na", "e2e-plan", "plans/e2e-plan",
+                "normal-test", "doris", "intra_node", "COMPLETED",
+            ),
+        )
+        results_json = {
+            "run_id": run_id,
+            "collected_at": "2026-03-29T10:00:00Z",
+            "collection_error": None,
+            "abort_reason": None,
+            "k6": {
+                "metrics": [
+                    {"name": "sql_duration_Q1", "type": "trend",
+                     "stats": {"count": 500, "min": 1.0, "max": 50.0, "avg": 10.0,
+                               "med": 8.0, "p90": 25.0, "p95": 35.0, "p99": 48.0}},
+                ],
+            },
+            "observability": {"sources": []},
+        }
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"results/{run_id}/results.json",
+            Body=json.dumps(results_json).encode(),
+        )
+        try:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "COMPLETED"
+            assert body["k6"]["metrics"][0]["stats"]["count"] == 500
+        finally:
+            _cleanup_run(run_id)
+            try:
+                _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
+            except Exception:
+                pass
+
+
 # ===========================================================================
 # FAILURE PATH TESTS
 # ===========================================================================

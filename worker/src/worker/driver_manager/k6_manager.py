@@ -43,6 +43,14 @@ def spawn_k6(
     ramp_up: str = execution.get("ramp_up", "")
     hold_for: str = execution.get("hold_for", "30s")
 
+    # Failure detection — pass config to k6 via env vars
+    fd = execution.get("failure_detection") or {}
+    if fd.get("enabled", True):
+        env["K6_ERROR_RATE_THRESHOLD"] = str(fd.get("error_rate_threshold", 0.5))
+        env["K6_ERROR_ABORT_DELAY"] = fd.get("abort_delay", "10s")
+    else:
+        env["K6_FAILURE_DETECTION_DISABLED"] = "true"
+
     cmd = [settings.k6_binary, "run"]
 
     if ramp_up:

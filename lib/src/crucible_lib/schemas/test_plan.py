@@ -64,6 +64,32 @@ class WorkloadItem(BaseModel):
     workload_id: str
 
 
+class FailureDetection(BaseModel):
+    """SUT failure detection — abort the test early when sustained query errors
+    indicate the target database is unresponsive.
+
+    When enabled, the k6 driver tracks a ``query_errors`` Rate metric.  If the
+    error rate exceeds ``error_rate_threshold`` after the initial
+    ``abort_delay`` window, k6 aborts gracefully and the run is marked
+    COMPLETED with whatever partial results were collected.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Set false to disable SUT failure detection entirely.",
+    )
+    error_rate_threshold: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description="Maximum allowed query error rate before aborting (0.0–1.0).",
+    )
+    abort_delay: str = Field(
+        default="10s",
+        description="Grace period before evaluating the threshold (k6 duration string, e.g. '10s', '30s').",
+    )
+
+
 class ExecutionConfig(BaseModel):
     executor: Literal["k6", "locust"]
     scaling_mode: Literal["intra_node", "inter_node"]
@@ -71,6 +97,7 @@ class ExecutionConfig(BaseModel):
     ramp_up: str
     hold_for: str
     workload: list[WorkloadItem]
+    failure_detection: FailureDetection | None = None
 
 
 class TestPlan(BaseModel):
