@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from worker.driver_manager.k6_manager import K6Result
-from worker.tasks.executor import k6_executor_task
+from worker.tasks.executor import _sub_segment, k6_executor_task
 
 
 def _make_plan(scaling_mode="intra_node"):
@@ -38,6 +38,46 @@ def _mock_process(returncode=0):
 
 def _k6_result(returncode=0, stderr="", timed_out=False):
     return K6Result(returncode=returncode, stderr=stderr, timed_out=timed_out)
+
+
+# ---------------------------------------------------------------------------
+# _sub_segment — fraction format for k6
+# ---------------------------------------------------------------------------
+
+def test_sub_segment_single_instance_passthrough():
+    """total=1 returns the original segment unchanged."""
+    assert _sub_segment("0%:100%", 0, 1) == "0%:100%"
+
+
+def test_sub_segment_two_instances_from_percentage():
+    """Percentage input split into 0–1 fractions."""
+    assert _sub_segment("0%:100%", 0, 2) == "0:0.5"
+    assert _sub_segment("0%:100%", 1, 2) == "0.5:1"
+
+
+def test_sub_segment_three_instances():
+    s0 = _sub_segment("0%:100%", 0, 3)
+    s1 = _sub_segment("0%:100%", 1, 3)
+    s2 = _sub_segment("0%:100%", 2, 3)
+    # Verify start of each equals end of previous
+    assert s0.split(":")[1] == s1.split(":")[0]
+    assert s1.split(":")[1] == s2.split(":")[0]
+    # First starts at 0, last ends at 1
+    assert s0.startswith("0:")
+    assert s2.endswith(":1")
+
+
+def test_sub_segment_fraction_input():
+    """Already in 0–1 fraction format."""
+    assert _sub_segment("0:1", 0, 2) == "0:0.5"
+    assert _sub_segment("0:1", 1, 2) == "0.5:1"
+
+
+def test_sub_segment_no_trailing_zeros():
+    """Output should not have unnecessary trailing zeros like 0.5000."""
+    result = _sub_segment("0%:100%", 0, 2)
+    assert "0.5000" not in result
+    assert result == "0:0.5"
 
 
 # ---------------------------------------------------------------------------

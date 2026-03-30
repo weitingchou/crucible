@@ -195,13 +195,22 @@ def _cleanup(sql_paths: list[str], run_id: str, local_instances: int) -> None:
 
 
 def _sub_segment(segment_flag: str, index: int, total: int) -> str:
-    """Split a segment into equal sub-segments for local multi-process scaling."""
+    """Split a segment into equal sub-segments for local multi-process scaling.
+
+    Outputs in 0–1 fraction format (e.g. ``"0:0.5"``) which k6 always accepts.
+    Percentage inputs (``"0%:100%"``) are converted to fractions first.
+    """
     if total == 1:
         return segment_flag
     start_str, end_str = segment_flag.split(":")
-    start = float(start_str.rstrip("%"))
-    end = float(end_str.rstrip("%"))
+    if start_str.endswith("%"):
+        start = float(start_str.rstrip("%")) / 100
+        end = float(end_str.rstrip("%")) / 100
+    else:
+        start = float(start_str)
+        end = float(end_str)
     width = (end - start) / total
     sub_start = start + index * width
     sub_end = start + (index + 1) * width
-    return f"{sub_start:.4f}%:{sub_end:.4f}%"
+    # Use %g to strip trailing zeros: 0.5 not 0.5000
+    return f"{sub_start:g}:{sub_end:g}"
