@@ -3,8 +3,44 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from worker.driver_manager.k6_manager import spawn_k6, wait_and_teardown
+from worker.driver_manager.k6_manager import parse_k6_duration, spawn_k6, wait_and_teardown
 
+
+# ---------------------------------------------------------------------------
+# parse_k6_duration
+# ---------------------------------------------------------------------------
+
+def test_parse_seconds():
+    assert parse_k6_duration("30s") == 30
+
+def test_parse_minutes():
+    assert parse_k6_duration("5m") == 300
+
+def test_parse_hours():
+    assert parse_k6_duration("1h") == 3600
+
+def test_parse_combined_m_s():
+    assert parse_k6_duration("2m30s") == 150
+
+def test_parse_combined_h_m_s():
+    assert parse_k6_duration("1h30m15s") == 5415
+
+def test_parse_milliseconds_truncated():
+    assert parse_k6_duration("500ms") == 0
+
+def test_parse_mixed_with_ms():
+    assert parse_k6_duration("1s500ms") == 1
+
+def test_parse_empty_string():
+    assert parse_k6_duration("") == 0
+
+def test_parse_zero():
+    assert parse_k6_duration("0s") == 0
+
+
+# ---------------------------------------------------------------------------
+# spawn_k6 — host/port parsing
+# ---------------------------------------------------------------------------
 
 def _make_plan(host, port=None):
     """Build a minimal plan dict with the given cluster_info host/port layout."""

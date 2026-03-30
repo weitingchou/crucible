@@ -12,7 +12,7 @@ from worker.db import (
     increment_ready_worker,
     update_run_status,
 )
-from worker.driver_manager.k6_manager import spawn_k6, wait_and_teardown
+from worker.driver_manager.k6_manager import parse_k6_duration, spawn_k6, wait_and_teardown
 from worker.metrics_collector import collect_and_store
 
 
@@ -58,7 +58,10 @@ def k6_executor_task(
             time.sleep(0.5)
 
     # ── 3. Spawn k6 process(es) ──────────────────────────────────────────────
-    hold_for = plan["execution"].get("hold_for_seconds", 120)
+    execution = plan["execution"]
+    ramp_up_secs = parse_k6_duration(execution.get("ramp_up", "0s"))
+    hold_for_secs = parse_k6_duration(execution.get("hold_for", "30s"))
+    hold_for = ramp_up_secs + hold_for_secs + 30  # 30s buffer for k6 teardown
     processes = []
     try:
         for i in range(local_instances):

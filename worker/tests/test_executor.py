@@ -23,7 +23,6 @@ def _make_plan(scaling_mode="intra_node"):
             "concurrency": 1,
             "ramp_up": "1s",
             "hold_for": "1s",
-            "hold_for_seconds": 5,
             "workload": [{"workload_id": "test-wl"}],
         },
     }
@@ -187,6 +186,37 @@ def test_k6_success_calls_collect_and_store(
 
     assert result["status"] == "completed"
     mock_collect.assert_called_once_with("run-ok", _make_plan(), 1, abort_reason=None)
+
+
+# ---------------------------------------------------------------------------
+# Timeout computed from ramp_up + hold_for + buffer
+# ---------------------------------------------------------------------------
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_wait_timeout_computed_from_plan_durations(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """timeout = parse(ramp_up) + parse(hold_for) + 30s buffer."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.return_value = _mock_process(returncode=0)
+    mock_wait.return_value = [_k6_result(0)]
+
+    plan = _make_plan()
+    plan["execution"]["ramp_up"] = "30s"
+    plan["execution"]["hold_for"] = "5m"
+    k6_executor_task.run(plan, "run-timeout", "0%:100%", 1)
+
+    # 30 + 300 + 30 = 360
+    mock_wait.assert_called_once()
+    actual_timeout = mock_wait.call_args[1]["timeout"]
+    assert actual_timeout == 360
 
 
 # ---------------------------------------------------------------------------

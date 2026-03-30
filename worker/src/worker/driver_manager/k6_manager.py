@@ -1,9 +1,33 @@
 import os
+import re
 import signal
 import subprocess
 
 from crucible_lib.net import parse_host
 from worker.config import settings
+
+
+def parse_k6_duration(s: str) -> int:
+    """Parse a k6/Go duration string into whole seconds.
+
+    Supports combinations of ``h``, ``m``, ``s``, and ``ms`` units
+    (e.g. ``"5m"``, ``"2m30s"``, ``"1h30m15s"``, ``"500ms"``).
+    Milliseconds are truncated.  Returns 0 for empty or zero input.
+    """
+    if not s:
+        return 0
+    total_ms = 0
+    for value, unit in re.findall(r"(\d+)(ms|h|m|s)", s):
+        n = int(value)
+        if unit == "h":
+            total_ms += n * 3_600_000
+        elif unit == "m":
+            total_ms += n * 60_000
+        elif unit == "s":
+            total_ms += n * 1_000
+        elif unit == "ms":
+            total_ms += n
+    return total_ms // 1_000
 
 
 def spawn_k6(
