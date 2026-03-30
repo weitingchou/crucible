@@ -209,7 +209,7 @@ async def test_submit_valid_plan(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
-        result = await fn(_VALID_PLAN_YAML, "smoke", "test-label")
+        result = await fn(_VALID_PLAN_YAML, "smoke", {"type": "doris"}, "test-label")
     assert result["success"] is True
     assert result["run_id"] == "r1"
     mock.assert_awaited_once()
@@ -218,7 +218,7 @@ async def test_submit_valid_plan(mcp_app):
 @pytest.mark.asyncio
 async def test_submit_invalid_plan_returns_errors(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
-    result = await fn("not: valid: plan:", "name")
+    result = await fn("not: valid: plan:", "name", {"type": "doris"})
     assert result["success"] is False
     assert "errors" in result
 
@@ -228,7 +228,7 @@ async def test_submit_catches_crucible_error(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.side_effect = CrucibleError(503, "ResourceExhausted: no capacity")
-        result = await fn(_VALID_PLAN_YAML, "smoke")
+        result = await fn(_VALID_PLAN_YAML, "smoke", {"type": "doris"})
     assert result["success"] is False
     assert "ResourceExhausted" in result["error"]
 
@@ -240,7 +240,7 @@ async def test_submit_injects_prometheus_url(mcp_app):
          patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
         mock_settings.k6_prometheus_rw_url = "http://prom:9090/write"
         mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
-        await fn(_VALID_PLAN_YAML, "smoke")
+        await fn(_VALID_PLAN_YAML, "smoke", {"type": "doris"})
         # Verify the submitted YAML now contains the injected URL
         submitted_yaml = mock_submit.call_args[0][0]
         parsed = yaml.safe_load(submitted_yaml)
@@ -256,7 +256,7 @@ async def test_submit_does_not_overwrite_existing_prometheus_url(mcp_app):
          patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock_submit:
         mock_settings.k6_prometheus_rw_url = "http://new:9090"
         mock_submit.return_value = {"run_id": "r1", "plan_key": "p", "strategy": "intra_node"}
-        await fn(plan_yaml, "smoke")
+        await fn(plan_yaml, "smoke", {"type": "doris"})
         submitted_yaml = mock_submit.call_args[0][0]
         parsed = yaml.safe_load(submitted_yaml)
         assert parsed["k6_prometheus_rw_server_url"] == "http://existing:9090"
@@ -387,8 +387,7 @@ async def test_submit_passes_cluster_spec_to_client(mcp_app):
     spec = {"type": "doris", "backend_node": {"replica": 3}}
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
-        await fn(_VALID_PLAN_YAML, "smoke", "", spec)
-    # cluster_spec should be forwarded as the 4th positional arg
+        await fn(_VALID_PLAN_YAML, "smoke", spec)
     mock.assert_awaited_once()
     call_args = mock.call_args[0]
     assert call_args[3] == spec
@@ -398,7 +397,7 @@ async def test_submit_passes_cluster_spec_to_client(mcp_app):
 async def test_submit_rejects_invalid_cluster_spec(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     spec = {"type": "unknown_db"}
-    result = await fn(_VALID_PLAN_YAML, "smoke", "", spec)
+    result = await fn(_VALID_PLAN_YAML, "smoke", spec)
     assert result["success"] is False
     assert "errors" in result
 
@@ -407,7 +406,7 @@ async def test_submit_rejects_invalid_cluster_spec(mcp_app):
 async def test_submit_rejects_cluster_spec_with_invalid_replica(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     spec = {"type": "doris", "backend_node": {"replica": 0}}
-    result = await fn(_VALID_PLAN_YAML, "smoke", "", spec)
+    result = await fn(_VALID_PLAN_YAML, "smoke", spec)
     assert result["success"] is False
     assert "errors" in result
 
@@ -419,9 +418,10 @@ async def test_submit_rejects_cluster_spec_with_invalid_replica(mcp_app):
 @pytest.mark.asyncio
 async def test_trigger_run_by_plan_succeeds(mcp_app):
     fn = _get_tool(mcp_app, "trigger_run_by_plan")
+    spec = {"type": "doris"}
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"}
-        result = await fn("bench")
+        result = await fn("bench", spec)
     assert result["success"] is True
     assert result["run_id"] == "r1"
 
@@ -432,7 +432,7 @@ async def test_trigger_run_by_plan_with_cluster_spec(mcp_app):
     spec = {"type": "doris", "backend_node": {"replica": 5}}
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r2", "plan_key": "plans/bench", "strategy": "intra_node"}
-        result = await fn("bench", "5-be-run", spec)
+        result = await fn("bench", spec, "5-be-run")
     assert result["success"] is True
     mock.assert_awaited_once_with("bench", "5-be-run", spec, None)
 
@@ -441,7 +441,7 @@ async def test_trigger_run_by_plan_with_cluster_spec(mcp_app):
 async def test_trigger_run_by_plan_rejects_invalid_cluster_spec(mcp_app):
     fn = _get_tool(mcp_app, "trigger_run_by_plan")
     spec = {"type": "unknown_db"}
-    result = await fn("bench", "", spec)
+    result = await fn("bench", spec)
     assert result["success"] is False
     assert "errors" in result
 
@@ -451,7 +451,7 @@ async def test_trigger_run_by_plan_catches_error(mcp_app):
     fn = _get_tool(mcp_app, "trigger_run_by_plan")
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.side_effect = CrucibleError(404, "Plan not found")
-        result = await fn("nonexistent")
+        result = await fn("nonexistent", {"type": "doris"})
     assert result["success"] is False
     assert "Plan not found" in result["error"]
 
@@ -465,7 +465,7 @@ async def test_submit_passes_cluster_settings_to_client(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
-        await fn(_VALID_PLAN_YAML, "smoke", "", None, "concurrency=20")
+        await fn(_VALID_PLAN_YAML, "smoke", {"type": "doris"}, "", "concurrency=20")
     call_args = mock.call_args[0]
     assert call_args[4] == "concurrency=20"
 
@@ -475,8 +475,8 @@ async def test_trigger_passes_cluster_settings_to_client(mcp_app):
     fn = _get_tool(mcp_app, "trigger_run_by_plan")
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"}
-        await fn("bench", "", None, "concurrency=50")
-    mock.assert_awaited_once_with("bench", "", None, "concurrency=50")
+        await fn("bench", {"type": "doris"}, "", "concurrency=50")
+    mock.assert_awaited_once_with("bench", "", {"type": "doris"}, "concurrency=50")
 
 
 # ---------------------------------------------------------------------------

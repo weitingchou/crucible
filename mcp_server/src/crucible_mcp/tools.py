@@ -150,8 +150,8 @@ def register_tools(mcp: FastMCP) -> None:
     async def submit_test_run(
         plan_yaml: str,
         plan_name: str,
+        cluster_spec: dict,
         label: str = "",
-        cluster_spec: dict | None = None,
         cluster_settings: str | None = None,
     ) -> dict:
         """Validates and submits a YAML test plan to the Crucible dispatcher.
@@ -163,10 +163,11 @@ def register_tools(mcp: FastMCP) -> None:
         for the complete schema, including the optional ``observability.prometheus_sources``
         section for collecting target engine metrics during the test.
         *plan_name* is the stable plan identity (used as S3 key and run_id prefix).
+        *cluster_spec* is a **required** cluster topology dict that records the
+        SUT specification for this run (e.g.
+        ``{"type": "doris", "backend_node": {"replica": 3}}``).  The ``type``
+        field must match the plan's ``component_spec.type``.
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
-        *cluster_spec* is an optional cluster topology dict (e.g.
-        ``{"type": "doris", "backend_node": {"replica": 3}}``).  Required for
-        disposable environment plans.
         *cluster_settings* is an optional free-form string recording the benchmark
         factor under test (e.g. a concurrency setting).
         Returns the run_id on success.
@@ -176,15 +177,14 @@ def register_tools(mcp: FastMCP) -> None:
         if not validation["valid"]:
             return {"success": False, "errors": validation["errors"]}
 
-        if cluster_spec is not None:
-            try:
-                _cluster_spec_adapter.validate_python(cluster_spec)
-            except ValidationError as exc:
-                errors = [
-                    {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
-                    for e in exc.errors()
-                ]
-                return {"success": False, "errors": errors}
+        try:
+            _cluster_spec_adapter.validate_python(cluster_spec)
+        except ValidationError as exc:
+            errors = [
+                {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
+                for e in exc.errors()
+            ]
+            return {"success": False, "errors": errors}
 
         # Auto-inject K6_PROMETHEUS_RW_SERVER_URL if configured and plan lacks it
         if settings.k6_prometheus_rw_url:
@@ -205,32 +205,33 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     async def trigger_run_by_plan(
         plan_name: str,
+        cluster_spec: dict,
         label: str = "",
-        cluster_spec: dict | None = None,
         cluster_settings: str | None = None,
     ) -> dict:
         """Triggers a new test run using an existing plan stored in Crucible.
 
         This is the primary way to re-run a test plan against different cluster
-        configurations. Provide *cluster_spec* to specify the cluster topology
-        (e.g. ``{"type": "doris", "backend_node": {"replica": 3}}``).
-        *cluster_spec* is required for disposable environment plans.
+        configurations.
 
         *plan_name* identifies the previously uploaded plan.
+        *cluster_spec* is a **required** cluster topology dict that records the
+        SUT specification for this run (e.g.
+        ``{"type": "doris", "backend_node": {"replica": 3}}``).  The ``type``
+        field must match the plan's ``component_spec.type``.
         *label* is an optional free-form display label for the run.
         *cluster_settings* is an optional free-form string recording the benchmark
         factor under test (e.g. a concurrency setting).
         Returns the run_id on success.
         """
-        if cluster_spec is not None:
-            try:
-                _cluster_spec_adapter.validate_python(cluster_spec)
-            except ValidationError as exc:
-                errors = [
-                    {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
-                    for e in exc.errors()
-                ]
-                return {"success": False, "errors": errors}
+        try:
+            _cluster_spec_adapter.validate_python(cluster_spec)
+        except ValidationError as exc:
+            errors = [
+                {"path": " -> ".join(str(p) for p in e["loc"]), "message": e["msg"]}
+                for e in exc.errors()
+            ]
+            return {"success": False, "errors": errors}
 
         try:
             result = await client.trigger_run(plan_name, label, cluster_spec, cluster_settings)

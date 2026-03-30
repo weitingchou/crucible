@@ -168,6 +168,7 @@ class TestSubmitRun:
             "plan_yaml": _load_plan_yaml(),
             "plan_name": plan_name,
             "label": f"e2e-label-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
         }, timeout=10)
 
         assert resp.status_code == 200
@@ -189,6 +190,11 @@ class TestSubmitRun:
         assert row["sut_type"] == "doris"
         assert row["scaling_mode"] == "intra_node"
         assert row["status"] == "PENDING"
+        spec = row["cluster_spec"]
+        if isinstance(spec, str):
+            import json as _json
+            spec = _json.loads(spec)
+        assert spec["type"] == "doris"
 
         # Cleanup
         _cleanup_run(run_id)
@@ -201,6 +207,7 @@ class TestSubmitRun:
             "plan_yaml": _load_plan_yaml(),
             "plan_name": plan_name,
             "label": f"e2e-settings-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
             "cluster_settings": "concurrency=20",
         }, timeout=10)
 
@@ -333,7 +340,9 @@ class TestTriggerRun:
         _cleanup_plan(self.plan_key)
 
     def test_trigger_creates_run(self):
-        resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.plan_name}", timeout=10)
+        resp = httpx.post(f"{API_BASE}/v1/test-runs/{self.plan_name}", json={
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
+        }, timeout=10)
         assert resp.status_code == 200
         body = resp.json()
         run_id = body["run_id"]
@@ -345,11 +354,19 @@ class TestTriggerRun:
         rows = _pg_query("SELECT * FROM test_runs WHERE run_id = %s", (run_id,))
         assert len(rows) == 1
         assert rows[0]["plan_name"] == self.plan_name
+        spec = rows[0]["cluster_spec"]
+        if isinstance(spec, str):
+            import json as _json
+            spec = _json.loads(spec)
+        assert spec["type"] == "doris"
 
     def test_trigger_with_cluster_settings(self):
         resp = httpx.post(
             f"{API_BASE}/v1/test-runs/{self.plan_name}",
-            json={"cluster_settings": "parallel_fragment_exec_instance_num=8"},
+            json={
+                "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
+                "cluster_settings": "parallel_fragment_exec_instance_num=8",
+            },
             timeout=10,
         )
         assert resp.status_code == 200
@@ -359,9 +376,17 @@ class TestTriggerRun:
         rows = _pg_query("SELECT cluster_settings FROM test_runs WHERE run_id = %s", (run_id,))
         assert rows[0]["cluster_settings"] == "parallel_fragment_exec_instance_num=8"
 
+    def test_trigger_without_cluster_spec_returns_422(self):
+        resp = httpx.post(
+            f"{API_BASE}/v1/test-runs/{self.plan_name}",
+            timeout=10,
+        )
+        assert resp.status_code == 422
+
     def test_trigger_plan_not_found(self):
         resp = httpx.post(
             f"{API_BASE}/v1/test-runs/nonexistent-plan-{_SESSION_TAG}",
+            json={"cluster_spec": {"type": "doris"}},
             timeout=10,
         )
         assert resp.status_code == 404
@@ -492,6 +517,7 @@ class TestSubmitWithFailureDetection:
             "plan_yaml": modified_yaml,
             "plan_name": plan_name,
             "label": f"e2e-fd-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
         }, timeout=10)
 
         assert resp.status_code == 200
@@ -523,6 +549,7 @@ class TestSubmitWithFailureDetection:
             "plan_yaml": modified_yaml,
             "plan_name": plan_name,
             "label": f"e2e-fd-off-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris", "backend_node": {"replica": 1}},
         }, timeout=10)
 
         assert resp.status_code == 200
@@ -543,6 +570,7 @@ class TestSubmitWithFailureDetection:
         resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
             "plan_yaml": yaml.dump(raw),
             "plan_name": f"e2e-fd-bad-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris"},
         }, timeout=10)
         assert resp.status_code == 422
 
@@ -551,6 +579,7 @@ class TestSubmitWithFailureDetection:
         resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
             "plan_yaml": yaml.dump(raw),
             "plan_name": f"e2e-fd-bad2-{_SESSION_TAG}",
+            "cluster_spec": {"type": "doris"},
         }, timeout=10)
         assert resp.status_code == 422
 
@@ -701,32 +730,13 @@ class TestSubmitValidationFailures:
         assert resp.status_code == 422
         assert "does not match" in str(resp.json()["detail"])
 
-    def test_submit_disposable_plan_without_cluster_spec(self):
-        """Disposable plans require cluster_spec."""
-        import yaml
-        disposable_plan = {
-            "test_metadata": {"run_label": "bench"},
-            "test_environment": {
-                "env_type": "disposable",
-                "target_db": "tpch",
-                "component_spec": {"type": "doris"},
-                "fixtures": [],
-            },
-            "execution": {
-                "executor": "k6",
-                "scaling_mode": "intra_node",
-                "concurrency": 10,
-                "ramp_up": "30s",
-                "hold_for": "2m",
-                "workload": [],
-            },
-        }
+    def test_submit_without_cluster_spec_returns_422(self):
+        """Any plan submitted without cluster_spec should be rejected."""
         resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
-            "plan_yaml": yaml.dump(disposable_plan),
-            "plan_name": f"e2e-disposable-{_SESSION_TAG}",
+            "plan_yaml": _load_plan_yaml(),
+            "plan_name": f"e2e-no-spec-{_SESSION_TAG}",
         }, timeout=10)
         assert resp.status_code == 422
-        assert "cluster_spec is required" in str(resp.json()["detail"])
 
     def test_submit_empty_cluster_spec(self):
         """Empty dict {} is not a valid cluster_spec (missing 'type')."""

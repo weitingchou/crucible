@@ -84,7 +84,10 @@ def test_submit_valid_plan_returns_200():
         # Make asyncio.to_thread just call the function
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = mock_celery_result
-        response = client.post("/v1/test-runs", json={"plan_yaml": _VALID_PLAN_YAML, "plan_name": "test"})
+        response = client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML, "plan_name": "test",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     assert response.status_code == 200
     body = response.json()
     assert "run_id" in body
@@ -112,7 +115,10 @@ def test_submit_inserts_run_into_db():
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = _mock_celery_result()
-        client.post("/v1/test-runs", json={"plan_yaml": _VALID_PLAN_YAML, "plan_name": "my-label"})
+        client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML, "plan_name": "my-label",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     mock_insert.assert_awaited_once()
     call_kwargs = mock_insert.call_args[1]
     assert call_kwargs["plan_name"] == "my-label"
@@ -131,7 +137,10 @@ def test_run_id_format():
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = _mock_celery_result()
-        response = client.post("/v1/test-runs", json={"plan_yaml": _VALID_PLAN_YAML, "plan_name": "smoke"})
+        response = client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML, "plan_name": "smoke",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     run_id = response.json()["run_id"]
     assert re.fullmatch(r"smoke_\d{8}-\d{4}_[0-9a-f]{8}", run_id), f"run_id format unexpected: {run_id}"
 
@@ -148,7 +157,10 @@ def test_same_label_produces_same_plan_key():
              patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
             mock_celery.send_task.return_value = _mock_celery_result()
-            resp = client.post("/v1/test-runs", json={"plan_yaml": _VALID_PLAN_YAML, "plan_name": "repeat"})
+            resp = client.post("/v1/test-runs", json={
+                "plan_yaml": _VALID_PLAN_YAML, "plan_name": "repeat",
+                "cluster_spec": _DORIS_CLUSTER_SPEC,
+            })
         body = resp.json()
         run_ids.append(body["run_id"])
         plan_keys.append(body["plan_key"])
@@ -173,7 +185,9 @@ def test_trigger_by_plan_name_returns_200():
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = _mock_celery_result()
-        response = client.post("/v1/test-runs/smoke-test")
+        response = client.post("/v1/test-runs/smoke-test", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     assert response.status_code == 200
     body = response.json()
     assert body["run_id"].startswith("smoke-test_")
@@ -194,7 +208,9 @@ def test_trigger_by_plan_name_run_id_format():
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = _mock_celery_result()
-        response = client.post("/v1/test-runs/smoke-test")
+        response = client.post("/v1/test-runs/smoke-test", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     run_id = response.json()["run_id"]
     assert re.fullmatch(r"smoke-test_\d{8}-\d{4}_[0-9a-f]{8}", run_id), f"run_id format unexpected: {run_id}"
 
@@ -211,7 +227,9 @@ def test_trigger_by_plan_name_inserts_plan_name_in_db():
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
         mock_celery.send_task.return_value = _mock_celery_result()
-        client.post("/v1/test-runs/smoke-test")
+        client.post("/v1/test-runs/smoke-test", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     mock_insert.assert_awaited_once()
     call_kwargs = mock_insert.call_args[1]
     assert call_kwargs["plan_name"] == "smoke-test"
@@ -231,6 +249,7 @@ def test_submit_explicit_label_overrides_plan_name_in_db():
             "plan_yaml": _VALID_PLAN_YAML,
             "plan_name": "smoke",
             "label": "My custom label",
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
         })
     call_kwargs = mock_insert.call_args[1]
     assert call_kwargs["run_label"] == "My custom label"
@@ -244,7 +263,9 @@ def test_trigger_by_plan_name_returns_404_when_missing():
     with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
          patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
         mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
-        response = client.post("/v1/test-runs/nonexistent")
+        response = client.post("/v1/test-runs/nonexistent", json={
+            "cluster_spec": _DORIS_CLUSTER_SPEC,
+        })
     assert response.status_code == 404
 
 
@@ -396,10 +417,10 @@ def test_submit_disposable_plan_with_cluster_spec():
     assert call_kwargs["cluster_spec"] == _DORIS_CLUSTER_SPEC
 
 
-def test_submit_disposable_plan_without_cluster_spec_returns_422():
-    """Disposable plan without cluster_spec should be rejected."""
+def test_submit_without_cluster_spec_returns_422():
+    """Any plan submitted without cluster_spec should be rejected."""
     response = client.post("/v1/test-runs", json={
-        "plan_yaml": _DISPOSABLE_PLAN_YAML,
+        "plan_yaml": _VALID_PLAN_YAML,
         "plan_name": "bench",
     })
     assert response.status_code == 422
@@ -426,22 +447,13 @@ def test_submit_invalid_cluster_spec_returns_422():
     assert response.status_code == 422
 
 
-def test_submit_long_lived_plan_without_cluster_spec_works():
-    """Long-lived plan with cluster_info and no cluster_spec — existing flow."""
-    mock_s3 = MagicMock()
-    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
-         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
-        mock_celery.send_task.return_value = _mock_celery_result()
-        response = client.post("/v1/test-runs", json={
-            "plan_yaml": _VALID_PLAN_YAML,
-            "plan_name": "smoke",
-        })
-    assert response.status_code == 200
-    call_kwargs = mock_insert.call_args[1]
-    assert call_kwargs["cluster_spec"] is None
+def test_submit_long_lived_plan_without_cluster_spec_returns_422():
+    """Long-lived plan without cluster_spec is now also rejected."""
+    response = client.post("/v1/test-runs", json={
+        "plan_yaml": _VALID_PLAN_YAML,
+        "plan_name": "smoke",
+    })
+    assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -495,17 +507,9 @@ def test_trigger_with_cluster_spec_stores_label():
     assert call_kwargs["run_label"] == "3-be-nodes"
 
 
-def test_trigger_disposable_without_cluster_spec_returns_422():
-    """Triggering a disposable plan without cluster_spec should fail."""
-    plan_bytes = _DISPOSABLE_PLAN_YAML.encode()
-    mock_s3 = MagicMock()
-    mock_s3.get_object.return_value = {
-        "Body": MagicMock(read=MagicMock(return_value=plan_bytes)),
-    }
-    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
-        response = client.post("/v1/test-runs/bench")
+def test_trigger_without_cluster_spec_returns_422():
+    """Triggering any plan without cluster_spec should fail."""
+    response = client.post("/v1/test-runs/bench")
     assert response.status_code == 422
 
 

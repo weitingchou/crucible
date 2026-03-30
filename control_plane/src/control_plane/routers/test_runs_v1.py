@@ -62,27 +62,21 @@ def _generate_run_id(plan_name: str) -> str:
 
 
 def _validate_cluster_spec(
-    cluster_spec_dict: dict | None,
+    cluster_spec_dict: dict,
     plan: TestPlan,
 ) -> None:
     """Validate a runtime cluster_spec against the plan's component_spec."""
-    if cluster_spec_dict is not None:
-        try:
-            _cluster_spec_adapter.validate_python(cluster_spec_dict)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors())
-        if cluster_spec_dict["type"] != plan.test_environment.component_spec.type:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"cluster_spec.type '{cluster_spec_dict['type']}' does not match "
-                    f"component_spec.type '{plan.test_environment.component_spec.type}'"
-                ),
-            )
-    elif plan.test_environment.env_type == "disposable":
+    try:
+        _cluster_spec_adapter.validate_python(cluster_spec_dict)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+    if cluster_spec_dict["type"] != plan.test_environment.component_spec.type:
         raise HTTPException(
             status_code=422,
-            detail="cluster_spec is required for disposable environment plans.",
+            detail=(
+                f"cluster_spec.type '{cluster_spec_dict['type']}' does not match "
+                f"component_spec.type '{plan.test_environment.component_spec.type}'"
+            ),
         )
 
 
@@ -180,13 +174,13 @@ async def list_test_runs(run_label: str | None = None) -> ListRunsResponse:
 )
 async def trigger_run_by_plan(
     plan_name: str,
-    body: TriggerRunRequest | None = None,
+    body: TriggerRunRequest,
 ) -> SubmitRunResponse:
     """Fetch an already-uploaded plan from S3 by *plan_name*, dispatch a new
     test run, and record it in PostgreSQL.
 
-    Provide ``cluster_spec`` in the request body to specify the cluster
-    topology for this run (required for disposable environments).
+    ``cluster_spec`` is required — it records the SUT topology for this run
+    (e.g. ``{"type": "doris", "backend_node": {"replica": 3}}``).
     """
     plan_key = f"plans/{plan_name}"
 
@@ -214,8 +208,7 @@ async def trigger_run_by_plan(
         raise HTTPException(status_code=422, detail=str(exc))
 
     # Validate runtime cluster_spec
-    cluster_spec_dict = body.cluster_spec if body else None
-    _validate_cluster_spec(cluster_spec_dict, plan)
+    _validate_cluster_spec(body.cluster_spec, plan)
 
     # Generate human-readable run_id
     run_id = _generate_run_id(plan_name)
@@ -224,15 +217,14 @@ async def trigger_run_by_plan(
     result = await asyncio.to_thread(
         _celery.send_task,
         "worker.tasks.dispatcher.dispatcher_task",
-        args=(raw, run_id, cluster_spec_dict),
+        args=(raw, run_id, body.cluster_spec),
     )
 
     # Record in PostgreSQL
     sut_type = plan.test_environment.component_spec.type
-    run_label = (body.label if body and body.label else None) or raw.get(
+    run_label = (body.label if body.label else None) or raw.get(
         "test_metadata", {}
     ).get("run_label", plan_name)
-    cluster_settings = body.cluster_settings if body else None
     await db.insert_run(
         run_id=run_id,
         task_id=result.id,
@@ -241,8 +233,8 @@ async def trigger_run_by_plan(
         run_label=run_label,
         sut_type=sut_type,
         scaling_mode=plan.execution.scaling_mode,
-        cluster_spec=cluster_spec_dict,
-        cluster_settings=cluster_settings,
+        cluster_spec=body.cluster_spec,
+        cluster_settings=body.cluster_settings,
     )
 
     return SubmitRunResponse(

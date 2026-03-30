@@ -46,6 +46,8 @@ async def submit_run(
     payload: dict = {"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label}
     if cluster_spec is not None:
         payload["cluster_spec"] = cluster_spec
+    else:
+        raise ValueError("cluster_spec is required when submitting a test run")
     if cluster_settings is not None:
         payload["cluster_settings"] = cluster_settings
     async with _client() as c:
@@ -60,11 +62,11 @@ async def trigger_run(
     cluster_spec: dict | None = None,
     cluster_settings: str | None = None,
 ) -> dict:
-    payload: dict = {}
+    if cluster_spec is None:
+        raise ValueError("cluster_spec is required when triggering a test run")
+    payload: dict = {"cluster_spec": cluster_spec}
     if label:
         payload["label"] = label
-    if cluster_spec is not None:
-        payload["cluster_spec"] = cluster_spec
     if cluster_settings is not None:
         payload["cluster_settings"] = cluster_settings
     async with _client() as c:

@@ -88,13 +88,13 @@ class SubmitRunRequest(BaseModel):
     plan_yaml: str
     plan_name: str
     label: str = ""
-    cluster_spec: dict | None = None
+    cluster_spec: dict
     cluster_settings: str | None = None
 
 
 class TriggerRunRequest(BaseModel):
     label: str = ""
-    cluster_spec: dict | None = None
+    cluster_spec: dict
     cluster_settings: str | None = None
 
 

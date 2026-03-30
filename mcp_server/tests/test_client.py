@@ -78,7 +78,7 @@ async def test_submit_run_posts_json():
     resp = _mock_response(200, {"run_id": "abc", "plan_key": "plans/smoke", "strategy": "intra_node"})
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import submit_run
-        result = await submit_run("plan_yaml: true", "smoke", "test-label")
+        result = await submit_run("plan_yaml: true", "smoke", "test-label", cluster_spec={"type": "doris"})
     assert result["run_id"] == "abc"
 
 
@@ -89,7 +89,7 @@ async def test_submit_run_raises_on_422():
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import submit_run
         with pytest.raises(CrucibleError) as exc_info:
-            await submit_run("bad", "name")
+            await submit_run("bad", "name", cluster_spec={"type": "doris"})
         assert exc_info.value.status_code == 422
         assert "InvalidParams" in exc_info.value.detail
 
@@ -213,7 +213,7 @@ async def test_trigger_run_returns_run_id():
     resp = _mock_response(200, {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"})
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import trigger_run
-        result = await trigger_run("bench")
+        result = await trigger_run("bench", cluster_spec={"type": "doris"})
     assert result["run_id"] == "r1"
 
 
@@ -234,21 +234,16 @@ async def test_trigger_run_with_label_posts_label():
     capturing = _CapturingClient(resp)
     with patch("crucible_mcp.client._client", return_value=capturing):
         from crucible_mcp.client import trigger_run
-        await trigger_run("bench", label="my-run")
+        await trigger_run("bench", label="my-run", cluster_spec={"type": "doris"})
     assert capturing.last_post_kwargs["json"]["label"] == "my-run"
 
 
 @pytest.mark.asyncio
-async def test_trigger_run_no_label_no_spec_sends_empty_payload():
-    """With no label or cluster_spec, payload should be an empty dict (not None)."""
-    resp = _mock_response(200, {"run_id": "r4", "plan_key": "plans/bench", "strategy": "intra_node"})
-    capturing = _CapturingClient(resp)
-    with patch("crucible_mcp.client._client", return_value=capturing):
+async def test_trigger_run_without_cluster_spec_raises():
+    """Triggering without cluster_spec should raise ValueError."""
+    with pytest.raises(ValueError, match="cluster_spec is required"):
         from crucible_mcp.client import trigger_run
         await trigger_run("bench")
-    # json key is present with an empty dict — not None
-    assert "json" in capturing.last_post_kwargs
-    assert capturing.last_post_kwargs["json"] == {}
 
 
 @pytest.mark.asyncio
@@ -257,7 +252,7 @@ async def test_trigger_run_posts_to_correct_url():
     capturing = _CapturingClient(resp)
     with patch("crucible_mcp.client._client", return_value=capturing):
         from crucible_mcp.client import trigger_run
-        await trigger_run("my-plan")
+        await trigger_run("my-plan", cluster_spec={"type": "doris"})
     assert capturing.last_post_url == "/v1/test-runs/my-plan"
 
 
@@ -267,7 +262,7 @@ async def test_trigger_run_raises_on_404():
     with patch("crucible_mcp.client._client", return_value=_FakeClient(resp)):
         from crucible_mcp.client import trigger_run
         with pytest.raises(CrucibleError) as exc_info:
-            await trigger_run("bad")
+            await trigger_run("bad", cluster_spec={"type": "doris"})
         assert exc_info.value.status_code == 404
 
 
