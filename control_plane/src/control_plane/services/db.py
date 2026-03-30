@@ -60,23 +60,31 @@ async def insert_run(
         ON CONFLICT (run_id) DO NOTHING
         """,
         run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode,
-        json.dumps(cluster_spec) if cluster_spec else None,
+        cluster_spec,
         cluster_settings,
     )
+
+
+def _fix_cluster_spec(row_dict: dict) -> dict:
+    """Deserialize cluster_spec if it was double-encoded as a JSON string."""
+    val = row_dict.get("cluster_spec")
+    if isinstance(val, str):
+        row_dict["cluster_spec"] = json.loads(val)
+    return row_dict
 
 
 async def get_run(run_id: str) -> dict | None:
     row = await _get_pool().fetchrow(
         "SELECT * FROM test_runs WHERE run_id = $1", run_id
     )
-    return dict(row) if row else None
+    return _fix_cluster_spec(dict(row)) if row else None
 
 
 async def get_active_runs() -> list[dict]:
     rows = await _get_pool().fetch(
         "SELECT * FROM test_runs WHERE status IN ('WAITING_ROOM', 'EXECUTING')"
     )
-    return [dict(r) for r in rows]
+    return [_fix_cluster_spec(dict(r)) for r in rows]
 
 
 async def update_run_status(run_id: str, status: str, **fields: object) -> None:
@@ -110,4 +118,4 @@ async def list_runs(run_label: str | None = None) -> list[dict]:
         rows = await _get_pool().fetch(
             "SELECT * FROM test_runs ORDER BY submitted_at DESC"
         )
-    return [dict(r) for r in rows]
+    return [_fix_cluster_spec(dict(r)) for r in rows]
