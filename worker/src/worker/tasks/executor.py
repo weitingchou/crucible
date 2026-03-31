@@ -91,10 +91,9 @@ def k6_executor_task(
     # ── 4. Wait and tear down ────────────────────────────────────────────────
     results = wait_and_teardown(processes, timeout=hold_for)
 
-    # ── 5. Upload artifacts and clean up ─────────────────────────────────────
+    # ── 5. Upload CSV artifacts to S3 ────────────────────────────────────────
     for i in range(local_instances):
         _upload_to_s3(f"/tmp/k6_raw_{run_id}_{i}.csv", run_id, i)
-    _cleanup(sql_paths, run_id, local_instances)
 
     # ── 6. Check for k6 failures ─────────────────────────────────────────────
     # Exit code 99 = k6 threshold violation (SUT failure detected).
@@ -117,6 +116,7 @@ def k6_executor_task(
                 detail += f"\n  stderr: {snippet}"
             parts.append(detail)
         error_msg = "k6 process failure:\n" + "\n".join(parts)
+        _cleanup(sql_paths, run_id, local_instances)
         if mode == "intra_node" or increment_completed_and_check(run_id):
             update_run_status(
                 run_id, "FAILED",
@@ -134,6 +134,9 @@ def k6_executor_task(
 
     if mode == "intra_node" or increment_completed_and_check(run_id):
         collect_and_store(run_id, plan, local_instances, abort_reason=abort_reason)
+
+    # ── 8. Clean up local files ──────────────────────────────────────────────
+    _cleanup(sql_paths, run_id, local_instances)
 
     return {"status": "completed", "mode": mode, "instances_run": local_instances}
 

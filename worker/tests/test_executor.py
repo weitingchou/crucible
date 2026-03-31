@@ -1,7 +1,8 @@
 """Tests for worker.tasks.executor — error handling and k6 exit code detection."""
 
+import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from worker.driver_manager.k6_manager import K6Result
 from worker.tasks.executor import _sub_segment, k6_executor_task
@@ -369,3 +370,209 @@ def test_spawn_failure_marks_run_as_failed(mock_cleanup, mock_download, mock_spa
     assert mock_status.call_args[0][1] == "FAILED"
     assert "k6 spawn failed" in mock_status.call_args[1]["error_detail"]
     assert "FileNotFoundError" in mock_status.call_args[1]["error_detail"]
+
+
+# ---------------------------------------------------------------------------
+# Cleanup ordering — CSV files must survive until collect_and_store finishes
+# ---------------------------------------------------------------------------
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_cleanup_called_after_collect_and_store_on_success(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """_cleanup must be called AFTER collect_and_store, not before it.
+
+    Regression test for the bug where _cleanup deleted CSV files before
+    collect_and_store could parse them, resulting in empty per-query metrics.
+    """
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.return_value = _mock_process(returncode=0)
+    mock_wait.return_value = [_k6_result(0)]
+
+    # Track call order across both mocks
+    call_order = []
+    mock_collect.side_effect = lambda *a, **kw: call_order.append("collect_and_store")
+    mock_cleanup.side_effect = lambda *a, **kw: call_order.append("cleanup")
+
+    k6_executor_task.run(_make_plan(), "run-order", "0%:100%", 1)
+
+    assert "collect_and_store" in call_order, "collect_and_store was not called"
+    assert "cleanup" in call_order, "_cleanup was not called"
+    assert call_order.index("collect_and_store") < call_order.index("cleanup"), (
+        f"_cleanup was called before collect_and_store! Order: {call_order}"
+    )
+
+
+@patch("worker.tasks.executor.collect_and_store")
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_cleanup_called_after_collect_on_threshold_abort(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait,
+    mock_status, mock_collect,
+):
+    """On threshold abort (exit 99), cleanup must still happen after collect_and_store."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.return_value = _mock_process(returncode=99)
+    mock_wait.return_value = [_k6_result(returncode=99, stderr="threshold crossed")]
+
+    call_order = []
+    mock_collect.side_effect = lambda *a, **kw: call_order.append("collect_and_store")
+    mock_cleanup.side_effect = lambda *a, **kw: call_order.append("cleanup")
+
+    k6_executor_task.run(_make_plan(), "run-99-order", "0%:100%", 1)
+
+    assert call_order.index("collect_and_store") < call_order.index("cleanup")
+
+
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.tasks.executor._cleanup")
+def test_cleanup_called_on_k6_failure_path(
+    mock_cleanup, mock_upload, mock_download, mock_spawn, mock_wait, mock_status,
+):
+    """k6 failure (non-zero, non-99 exit) still cleans up local files."""
+    mock_download.return_value = ["/tmp/test-wl"]
+    mock_spawn.return_value = _mock_process(returncode=1)
+    mock_wait.return_value = [_k6_result(returncode=1, stderr="error")]
+
+    k6_executor_task.run(_make_plan(), "run-fail-cleanup", "0%:100%", 1)
+
+    mock_cleanup.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Integration: CSV files are readable when collect_and_store runs
+# ---------------------------------------------------------------------------
+
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.metrics_collector._upload_results_json")
+@patch("worker.metrics_collector.update_run_status")
+def test_csv_files_exist_when_collect_and_store_parses_them(
+    mock_collector_status, mock_upload_results, mock_upload_s3,
+    mock_download, mock_spawn, mock_wait, mock_executor_status,
+):
+    """End-to-end: real CSV files on disk are parsed by collect_and_store.
+
+    This test does NOT mock _cleanup or collect_and_store — it uses the
+    real implementations to prove that the CSV files exist at parse time
+    and are cleaned up afterwards.
+    """
+    run_id = "run-csv-integration"
+    csv_path = f"/tmp/k6_raw_{run_id}_0.csv"
+    sql_path = f"/tmp/test-wl-integration"
+
+    try:
+        # Create a real CSV file simulating k6 output
+        with open(csv_path, "w") as f:
+            f.write("metric_name,timestamp,metric_value\n")
+            f.write("sql_duration_Q1,1710510600,10.0\n")
+            f.write("sql_duration_Q1,1710510601,20.0\n")
+            f.write("sql_duration_Q2,1710510600,5.0\n")
+
+        # Create a fake SQL fixture file (so _cleanup has something to delete)
+        with open(sql_path, "w") as f:
+            f.write("SELECT 1;")
+
+        mock_download.return_value = [sql_path]
+        mock_spawn.return_value = _mock_process(returncode=0)
+        mock_wait.return_value = [_k6_result(0)]
+
+        result = k6_executor_task.run(_make_plan(), run_id, "0%:100%", 1)
+
+        assert result["status"] == "completed"
+
+        # Verify collect_and_store was called and uploaded real metrics
+        mock_upload_results.assert_called_once()
+        results_json = mock_upload_results.call_args[0][1]
+        k6_metrics = results_json["k6"]["metrics"]
+        metric_names = [m["name"] for m in k6_metrics]
+        assert "sql_duration_Q1" in metric_names, (
+            f"Per-query metric sql_duration_Q1 missing from results! Got: {metric_names}"
+        )
+        assert "sql_duration_Q2" in metric_names
+
+        q1 = next(m for m in k6_metrics if m["name"] == "sql_duration_Q1")
+        assert q1["stats"]["count"] == 2
+        assert q1["stats"]["min"] == 10.0
+        assert q1["stats"]["max"] == 20.0
+
+        # Verify cleanup ran — files should be gone
+        assert not os.path.exists(csv_path), "CSV file was not cleaned up"
+        assert not os.path.exists(sql_path), "SQL fixture was not cleaned up"
+
+    finally:
+        # Safety net in case test fails before cleanup
+        for p in [csv_path, sql_path]:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+@patch("worker.tasks.executor.update_run_status")
+@patch("worker.tasks.executor.wait_and_teardown")
+@patch("worker.tasks.executor.spawn_k6")
+@patch("worker.tasks.executor._download_sql_fixtures")
+@patch("worker.tasks.executor._upload_to_s3")
+@patch("worker.metrics_collector._upload_results_json")
+@patch("worker.metrics_collector.update_run_status")
+def test_csv_files_exist_for_multi_instance_collect(
+    mock_collector_status, mock_upload_results, mock_upload_s3,
+    mock_download, mock_spawn, mock_wait, mock_executor_status,
+):
+    """Multiple k6 instances: all CSV files must be readable at collect time."""
+    run_id = "run-multi-csv-integration"
+    local_instances = 3
+    csv_paths = [f"/tmp/k6_raw_{run_id}_{i}.csv" for i in range(local_instances)]
+    sql_path = f"/tmp/test-wl-multi-integration"
+
+    try:
+        for i, csv_path in enumerate(csv_paths):
+            with open(csv_path, "w") as f:
+                f.write("metric_name,timestamp,metric_value\n")
+                f.write(f"sql_duration_Q1,1710510600,{10.0 * (i + 1)}\n")
+
+        with open(sql_path, "w") as f:
+            f.write("SELECT 1;")
+
+        mock_download.return_value = [sql_path]
+        mock_spawn.side_effect = [_mock_process(0) for _ in range(local_instances)]
+        mock_wait.return_value = [_k6_result(0) for _ in range(local_instances)]
+
+        result = k6_executor_task.run(_make_plan(), run_id, "0%:100%", local_instances)
+
+        assert result["status"] == "completed"
+
+        mock_upload_results.assert_called_once()
+        results_json = mock_upload_results.call_args[0][1]
+        q1 = next(m for m in results_json["k6"]["metrics"] if m["name"] == "sql_duration_Q1")
+        assert q1["stats"]["count"] == 3, (
+            f"Expected 3 data points from 3 CSV files, got {q1['stats']['count']}"
+        )
+        assert q1["stats"]["min"] == 10.0
+        assert q1["stats"]["max"] == 30.0
+
+        # All files cleaned up
+        for p in csv_paths:
+            assert not os.path.exists(p), f"CSV {p} was not cleaned up"
+
+    finally:
+        for p in csv_paths + [sql_path]:
+            if os.path.exists(p):
+                os.remove(p)
