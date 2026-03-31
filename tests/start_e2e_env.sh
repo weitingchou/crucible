@@ -69,7 +69,7 @@ while true; do
     for svc in rabbitmq postgres minio; do
         status=$(docker compose ps --format '{{.Health}}' "$svc" 2>/dev/null || echo "unknown")
         if [[ "$status" == "healthy" ]]; then
-            ((healthy++))
+            healthy=$((healthy + 1))
         fi
     done
 
@@ -85,7 +85,7 @@ while true; do
     fi
 
     sleep 2
-    ((elapsed+=2))
+    elapsed=$((elapsed + 2))
     echo "  Waiting... ($healthy/$total healthy, ${elapsed}s elapsed)"
 done
 
