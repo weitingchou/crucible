@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 import time
 from datetime import datetime, timezone
 
@@ -25,10 +24,14 @@ from worker.db import update_run_status
 def collect_and_store(
     run_id: str,
     plan: dict,
-    local_instances: int,
     abort_reason: str | None = None,
 ) -> None:
-    """Parse k6 CSVs, query Prometheus sources, upload results.json to S3.
+    """Download k6 CSVs from S3, parse, query Prometheus, upload results.json.
+
+    CSVs are downloaded from S3 (not read from local disk) so that
+    inter-node runs can merge data from all executor segments.  Each
+    executor uploads its CSV to a unique S3 key before this function
+    is called.
 
     On any error the run still moves to COMPLETED with ``collection_error``
     recorded in the JSON.  Only k6 execution failures mark a run as FAILED.
@@ -43,9 +46,9 @@ def collect_and_store(
     k6_metrics: list[dict] = []
     obs_sources: list[dict] = []
 
-    # ── 1. Parse k6 CSV artifacts ─────────────────────────────────────────
+    # ── 1. Download and parse k6 CSV artifacts from S3 ────────────────────
     try:
-        k6_metrics = _parse_k6_csvs(run_id, local_instances)
+        k6_metrics = _download_and_parse_csvs(run_id)
     except Exception as exc:
         collection_error = f"k6 CSV parsing failed: {type(exc).__name__}: {exc}"
 
@@ -87,17 +90,26 @@ def collect_and_store(
 # ── k6 CSV parsing ──────────────────────────────────────────────────────────
 
 
-def _parse_k6_csvs(run_id: str, local_instances: int) -> list[dict]:
-    """Parse k6 CSV output files and compute per-metric summary stats."""
-    # Collect all values grouped by metric name
+def _download_and_parse_csvs(run_id: str) -> list[dict]:
+    """List k6 CSV artifacts in S3, download, parse, and compute summary stats.
+
+    This replaces local-disk reading so that inter-node runs can merge
+    data from all executor segments.  Each CSV was uploaded by an executor
+    to ``results/{run_id}/k6_raw_{segment}_{instance}.csv``.
+    """
+    s3 = _s3_client()
+    prefix = f"results/{run_id}/k6_raw_"
     metric_values: dict[str, list[float]] = {}
 
-    for i in range(local_instances):
-        path = f"/tmp/k6_raw_{run_id}_{i}.csv"
-        if not os.path.exists(path):
-            continue
-        with open(path, newline="") as f:
-            reader = csv.DictReader(f)
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(".csv"):
+                continue
+            resp = s3.get_object(Bucket=settings.s3_bucket, Key=key)
+            body = resp["Body"].read().decode("utf-8")
+            reader = csv.DictReader(body.splitlines())
             for row in reader:
                 name = row.get("metric_name", "")
                 value_str = row.get("metric_value", "")

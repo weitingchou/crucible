@@ -18,9 +18,15 @@ from worker.metrics_collector import collect_and_store
 
 @app.task(bind=True, name="worker.tasks.executor.k6_executor_task")
 def k6_executor_task(
-    self, plan: dict, run_id: str, segment_flag: str, local_instances: int
+    self, plan: dict, run_id: str, segment_flag: str,
+    local_instances: int, segment_index: int = 0,
 ) -> dict:
     """Download SQL workload files, optionally sync (inter-node), then run k6.
+
+    Args:
+        segment_index: Global executor index assigned by the dispatcher.
+            Intra-node always 0; inter-node 0..N-1.  Used to build unique
+            CSV filenames so multiple executors don't collide in S3.
 
     Steps:
     1. Download annotated SQL workload file(s) from S3 to local disk.
@@ -53,7 +59,7 @@ def k6_executor_task(
             if state == "START":
                 break
             if state == "ABORT":
-                _cleanup(sql_paths, run_id, local_instances)
+                _cleanup_files(sql_paths, [])
                 return {"status": "aborted_by_dispatcher"}
             time.sleep(0.5)
 
@@ -62,6 +68,14 @@ def k6_executor_task(
     ramp_up_secs = parse_k6_duration(execution.get("ramp_up", "0s"))
     hold_for_secs = parse_k6_duration(execution.get("hold_for", "30s"))
     hold_for = ramp_up_secs + hold_for_secs + 30  # 30s buffer for k6 teardown
+    # CSV naming: k6_raw_{run_id}_{segment_index}_{local_instance}.csv
+    # This ensures unique filenames across executors in inter-node mode.
+    def _csv_local(i: int) -> str:
+        return f"/tmp/k6_raw_{run_id}_{segment_index}_{i}.csv"
+
+    def _csv_s3_key(i: int) -> str:
+        return f"results/{run_id}/k6_raw_{segment_index}_{i}.csv"
+
     processes = []
     try:
         for i in range(local_instances):
@@ -70,8 +84,9 @@ def k6_executor_task(
                 spawn_k6(
                     run_id,
                     local_segment,
-                    i,
-                    plan,
+                    instance_index=i,
+                    segment_index=segment_index,
+                    plan=plan,
                     extra_env={"DOWNLOADED_SQL_PATH": sql_paths[0] if sql_paths else ""},
                 )
             )
@@ -80,7 +95,7 @@ def k6_executor_task(
         for p in processes:
             p.kill()
             p.wait()
-        _cleanup(sql_paths, run_id, local_instances)
+        _cleanup_files(sql_paths, [_csv_local(i) for i in range(local_instances)])
         update_run_status(
             run_id, "FAILED",
             error_detail=f"k6 spawn failed: {type(exc).__name__}: {exc}",
@@ -93,7 +108,7 @@ def k6_executor_task(
 
     # ── 5. Upload CSV artifacts to S3 ────────────────────────────────────────
     for i in range(local_instances):
-        _upload_to_s3(f"/tmp/k6_raw_{run_id}_{i}.csv", run_id, i)
+        _upload_to_s3(_csv_local(i), _csv_s3_key(i))
 
     # ── 6. Check for k6 failures ─────────────────────────────────────────────
     # Exit code 99 = k6 threshold violation (SUT failure detected).
@@ -116,7 +131,7 @@ def k6_executor_task(
                 detail += f"\n  stderr: {snippet}"
             parts.append(detail)
         error_msg = "k6 process failure:\n" + "\n".join(parts)
-        _cleanup(sql_paths, run_id, local_instances)
+        _cleanup_files(sql_paths, [_csv_local(i) for i in range(local_instances)])
         if mode == "intra_node" or increment_completed_and_check(run_id):
             update_run_status(
                 run_id, "FAILED",
@@ -133,10 +148,10 @@ def k6_executor_task(
         abort_reason = "SUT failure detected: query error rate exceeded threshold"
 
     if mode == "intra_node" or increment_completed_and_check(run_id):
-        collect_and_store(run_id, plan, local_instances, abort_reason=abort_reason)
+        collect_and_store(run_id, plan, abort_reason=abort_reason)
 
     # ── 8. Clean up local files ──────────────────────────────────────────────
-    _cleanup(sql_paths, run_id, local_instances)
+    _cleanup_files(sql_paths, [_csv_local(i) for i in range(local_instances)])
 
     return {"status": "completed", "mode": mode, "instances_run": local_instances}
 
@@ -177,24 +192,16 @@ def _download_sql_fixtures(workloads: list[dict]) -> list[str]:
     return paths
 
 
-def _upload_to_s3(local_path: str, run_id: str, index: int) -> None:
+def _upload_to_s3(local_path: str, s3_key: str) -> None:
     if not os.path.exists(local_path):
         return
-    _s3_client().upload_file(
-        local_path,
-        settings.s3_bucket,
-        f"results/{run_id}/k6_raw_{index}.csv",
-    )
+    _s3_client().upload_file(local_path, settings.s3_bucket, s3_key)
 
 
-def _cleanup(sql_paths: list[str], run_id: str, local_instances: int) -> None:
-    for path in sql_paths:
+def _cleanup_files(sql_paths: list[str], csv_paths: list[str]) -> None:
+    for path in sql_paths + csv_paths:
         if os.path.exists(path):
             os.remove(path)
-    for i in range(local_instances):
-        csv = f"/tmp/k6_raw_{run_id}_{i}.csv"
-        if os.path.exists(csv):
-            os.remove(csv)
 
 
 def _sub_segment(segment_flag: str, index: int, total: int) -> str:

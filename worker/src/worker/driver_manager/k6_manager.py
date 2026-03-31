@@ -35,6 +35,7 @@ def spawn_k6(
     segment_flag: str,
     instance_index: int,
     plan: dict,
+    segment_index: int = 0,
     extra_env: dict | None = None,
 ) -> subprocess.Popen:
     """Spawn a single k6 process and return the Popen handle.
@@ -42,9 +43,12 @@ def spawn_k6(
     Args:
         run_id: Unique identifier for the test run (injected as a Prometheus tag).
         segment_flag: k6 execution segment string, e.g. ``"0%:50%"``.
-        instance_index: Per-node index used to name the CSV artifact file.
+        instance_index: Per-node local instance index (0..local_instances-1).
         plan: Full test plan dict; DB connection details are read from
             ``test_environment.component_spec.cluster_info``.
+        segment_index: Global executor index (0 for intra-node, 0..N-1 for
+            inter-node).  Combined with instance_index to form a unique CSV
+            filename: ``k6_raw_{run_id}_{segment_index}_{instance_index}.csv``.
         extra_env: Additional environment variables merged into the subprocess env
             (e.g. ``DOWNLOADED_SQL_PATH``).
     """
@@ -85,7 +89,7 @@ def spawn_k6(
     cmd += [
         "--execution-segment", segment_flag,
         "--out", "experimental-prometheus-rw",
-        "--out", f"csv=/tmp/k6_raw_{run_id}_{instance_index}.csv",
+        "--out", f"csv=/tmp/k6_raw_{run_id}_{segment_index}_{instance_index}.csv",
         settings.sql_driver_path,
     ]
     return subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)

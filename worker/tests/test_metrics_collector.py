@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from worker.metrics_collector import (
-    _parse_k6_csvs,
+    _download_and_parse_csvs,
     _percentile,
     _query_prometheus_sources,
     _summarize_metrics,
@@ -66,103 +66,95 @@ def test_summarize_metrics_sorted_by_name():
 
 
 # ---------------------------------------------------------------------------
-# _parse_k6_csvs
+# _download_and_parse_csvs — reads CSVs from S3
 # ---------------------------------------------------------------------------
 
-def test_parse_k6_csvs_reads_csv_files():
-    """Parse a synthetic k6 CSV and verify summary stats."""
-    run_id = "test-parse-csv"
-    csv_content = (
-        "metric_name,timestamp,metric_value\n"
+def _make_csv(rows_str: str) -> bytes:
+    return ("metric_name,timestamp,metric_value\n" + rows_str).encode()
+
+
+def _mock_s3_with_csvs(csv_dict: dict[str, bytes]):
+    """Return a mock S3 client with list_objects_v2 + get_object for given key→body pairs."""
+    mock_s3 = MagicMock()
+    paginator = MagicMock()
+    contents = [{"Key": k} for k in csv_dict]
+    paginator.paginate.return_value = [{"Contents": contents}]
+    mock_s3.get_paginator.return_value = paginator
+
+    def get_object(Bucket, Key):
+        body = MagicMock()
+        body.read.return_value = csv_dict[Key]
+        return {"Body": body}
+
+    mock_s3.get_object.side_effect = get_object
+    return mock_s3
+
+
+@patch("worker.metrics_collector._s3_client")
+def test_download_and_parse_single_csv(mock_s3_fn):
+    """Single CSV in S3 → metrics parsed correctly."""
+    csv_data = _make_csv(
         "sql_duration_Q1,1710510600,10.5\n"
         "sql_duration_Q1,1710510601,20.5\n"
-        "sql_duration_Q1,1710510602,30.5\n"
         "sql_duration_Q2,1710510600,5.0\n"
-        "sql_duration_Q2,1710510601,15.0\n"
     )
-    path = f"/tmp/k6_raw_{run_id}_0.csv"
-    try:
-        with open(path, "w") as f:
-            f.write(csv_content)
-        result = _parse_k6_csvs(run_id, 1)
-        names = [m["name"] for m in result]
-        assert "sql_duration_Q1" in names
-        assert "sql_duration_Q2" in names
-        q1 = next(m for m in result if m["name"] == "sql_duration_Q1")
-        assert q1["stats"]["count"] == 3
-        assert q1["stats"]["min"] == 10.5
-        assert q1["stats"]["max"] == 30.5
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
+    mock_s3_fn.return_value = _mock_s3_with_csvs({
+        "results/run-1/k6_raw_0_0.csv": csv_data,
+    })
+    result = _download_and_parse_csvs("run-1")
+    names = [m["name"] for m in result]
+    assert "sql_duration_Q1" in names
+    assert "sql_duration_Q2" in names
+    q1 = next(m for m in result if m["name"] == "sql_duration_Q1")
+    assert q1["stats"]["count"] == 2
+    assert q1["stats"]["min"] == 10.5
+    assert q1["stats"]["max"] == 20.5
 
 
-def test_parse_k6_csvs_missing_file_returns_empty():
-    result = _parse_k6_csvs("nonexistent-run", 1)
+@patch("worker.metrics_collector._s3_client")
+def test_download_and_parse_merges_multiple_csvs(mock_s3_fn):
+    """Multiple CSVs from different segments → merged into one result."""
+    csv_a = _make_csv("sql_duration_Q1,1710510600,10.0\nsql_duration_Q1,1710510601,20.0\n")
+    csv_b = _make_csv("sql_duration_Q1,1710510600,30.0\nsql_duration_Q1,1710510601,40.0\n")
+    mock_s3_fn.return_value = _mock_s3_with_csvs({
+        "results/run-2/k6_raw_0_0.csv": csv_a,
+        "results/run-2/k6_raw_1_0.csv": csv_b,
+    })
+    result = _download_and_parse_csvs("run-2")
+    q1 = next(m for m in result if m["name"] == "sql_duration_Q1")
+    assert q1["stats"]["count"] == 4
+    assert q1["stats"]["min"] == 10.0
+    assert q1["stats"]["max"] == 40.0
+
+
+@patch("worker.metrics_collector._s3_client")
+def test_download_and_parse_no_csvs_returns_empty(mock_s3_fn):
+    """No CSV files in S3 prefix → empty metrics list."""
+    mock_s3 = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = [{"Contents": []}]
+    mock_s3.get_paginator.return_value = paginator
+    mock_s3_fn.return_value = mock_s3
+    result = _download_and_parse_csvs("nonexistent-run")
     assert result == []
 
 
-def test_parse_k6_csvs_skips_rows_with_missing_fields():
-    """Rows missing metric_name or metric_value should be silently skipped."""
-    run_id = "test-bad-rows"
-    csv_content = (
-        "metric_name,timestamp,metric_value\n"
-        ",1710510600,10.0\n"              # empty metric_name
-        "sql_duration_Q1,1710510600,\n"   # empty metric_value
-        "sql_duration_Q1,1710510601,20.0\n"  # valid
+@patch("worker.metrics_collector._s3_client")
+def test_download_and_parse_skips_bad_rows(mock_s3_fn):
+    """Rows with missing or non-numeric values are silently skipped."""
+    csv_data = _make_csv(
+        ",1710510600,10.0\n"
+        "sql_duration_Q1,1710510600,\n"
+        "sql_duration_Q1,1710510601,not_a_number\n"
+        "sql_duration_Q1,1710510602,5.0\n"
     )
-    path = f"/tmp/k6_raw_{run_id}_0.csv"
-    try:
-        with open(path, "w") as f:
-            f.write(csv_content)
-        result = _parse_k6_csvs(run_id, 1)
-        assert len(result) == 1
-        assert result[0]["stats"]["count"] == 1
-        assert result[0]["stats"]["min"] == 20.0
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
-
-
-def test_parse_k6_csvs_skips_non_numeric_values():
-    """Non-numeric metric_value should be skipped without raising."""
-    run_id = "test-nonnumeric"
-    csv_content = (
-        "metric_name,timestamp,metric_value\n"
-        "sql_duration_Q1,1710510600,not_a_number\n"
-        "sql_duration_Q1,1710510601,5.0\n"
-    )
-    path = f"/tmp/k6_raw_{run_id}_0.csv"
-    try:
-        with open(path, "w") as f:
-            f.write(csv_content)
-        result = _parse_k6_csvs(run_id, 1)
-        assert len(result) == 1
-        assert result[0]["stats"]["count"] == 1
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
-
-
-def test_parse_k6_csvs_multiple_instances():
-    """Merge metrics from multiple k6 CSV files."""
-    run_id = "test-multi-csv"
-    paths = []
-    try:
-        for i in range(2):
-            path = f"/tmp/k6_raw_{run_id}_{i}.csv"
-            paths.append(path)
-            with open(path, "w") as f:
-                f.write("metric_name,timestamp,metric_value\n")
-                f.write(f"sql_duration_Q1,1710510600,{10.0 + i * 10}\n")
-
-        result = _parse_k6_csvs(run_id, 2)
-        q1 = next(m for m in result if m["name"] == "sql_duration_Q1")
-        assert q1["stats"]["count"] == 2
-    finally:
-        for p in paths:
-            if os.path.exists(p):
-                os.remove(p)
+    mock_s3_fn.return_value = _mock_s3_with_csvs({
+        "results/run-3/k6_raw_0_0.csv": csv_data,
+    })
+    result = _download_and_parse_csvs("run-3")
+    assert len(result) == 1
+    assert result[0]["stats"]["count"] == 1
+    assert result[0]["stats"]["min"] == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +162,7 @@ def test_parse_k6_csvs_multiple_instances():
 # ---------------------------------------------------------------------------
 
 @patch("worker.metrics_collector._upload_results_json")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_no_observability(mock_status, mock_parse, mock_upload):
     """Plan without observability → k6 stats only, no Prometheus queries."""
@@ -179,7 +171,7 @@ def test_collect_and_store_no_observability(mock_status, mock_parse, mock_upload
     ]
 
     plan = {"test_environment": {}, "execution": {}}
-    collect_and_store("run-1", plan, 1)
+    collect_and_store("run-1", plan)
 
     # Transitions: COLLECTING → COMPLETED
     assert mock_status.call_count == 2
@@ -197,7 +189,7 @@ def test_collect_and_store_no_observability(mock_status, mock_parse, mock_upload
 
 
 @patch("worker.metrics_collector._upload_results_json")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_includes_abort_reason(mock_status, mock_parse, mock_upload):
     """abort_reason is included in results JSON when set."""
@@ -206,7 +198,7 @@ def test_collect_and_store_includes_abort_reason(mock_status, mock_parse, mock_u
     ]
 
     plan = {"test_environment": {}, "execution": {}}
-    collect_and_store("run-abort", plan, 1, abort_reason="SUT failure detected: query error rate exceeded threshold")
+    collect_and_store("run-abort", plan, abort_reason="SUT failure detected: query error rate exceeded threshold")
 
     mock_upload.assert_called_once()
     results = mock_upload.call_args[0][1]
@@ -218,7 +210,7 @@ def test_collect_and_store_includes_abort_reason(mock_status, mock_parse, mock_u
 
 @patch("worker.metrics_collector._upload_results_json")
 @patch("worker.metrics_collector._query_prometheus_sources")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_with_observability(mock_status, mock_parse, mock_prom, mock_upload):
     """Plan with prometheus_sources → both k6 and Prometheus results."""
@@ -238,7 +230,7 @@ def test_collect_and_store_with_observability(mock_status, mock_parse, mock_prom
         },
         "execution": {},
     }
-    collect_and_store("run-2", plan, 1)
+    collect_and_store("run-2", plan)
 
     mock_prom.assert_called_once()
     results = mock_upload.call_args[0][1]
@@ -247,14 +239,14 @@ def test_collect_and_store_with_observability(mock_status, mock_parse, mock_prom
 
 
 @patch("worker.metrics_collector._upload_results_json")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_csv_error_sets_collection_error(mock_status, mock_parse, mock_upload):
     """CSV parse failure → collection_error set, run still COMPLETED."""
     mock_parse.side_effect = RuntimeError("corrupt CSV")
 
     plan = {"test_environment": {}, "execution": {}}
-    collect_and_store("run-err", plan, 1)
+    collect_and_store("run-err", plan)
 
     results = mock_upload.call_args[0][1]
     assert "corrupt CSV" in results["collection_error"]
@@ -265,7 +257,7 @@ def test_collect_and_store_csv_error_sets_collection_error(mock_status, mock_par
 
 @patch("worker.metrics_collector._upload_results_json")
 @patch("worker.metrics_collector._query_prometheus_sources")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_prometheus_error_sets_collection_error(
     mock_status, mock_parse, mock_prom, mock_upload
@@ -284,7 +276,7 @@ def test_collect_and_store_prometheus_error_sets_collection_error(
         },
         "execution": {},
     }
-    collect_and_store("run-prom-err", plan, 1)
+    collect_and_store("run-prom-err", plan)
 
     results = mock_upload.call_args[0][1]
     assert "unreachable" in results["collection_error"]
@@ -292,7 +284,7 @@ def test_collect_and_store_prometheus_error_sets_collection_error(
 
 
 @patch("worker.metrics_collector._upload_results_json")
-@patch("worker.metrics_collector._parse_k6_csvs")
+@patch("worker.metrics_collector._download_and_parse_csvs")
 @patch("worker.metrics_collector.update_run_status")
 def test_collect_and_store_s3_upload_failure_still_completes(
     mock_status, mock_parse, mock_upload
@@ -302,7 +294,7 @@ def test_collect_and_store_s3_upload_failure_still_completes(
     mock_upload.side_effect = RuntimeError("S3 unreachable")
 
     plan = {"test_environment": {}, "execution": {}}
-    collect_and_store("run-s3-err", plan, 1)
+    collect_and_store("run-s3-err", plan)
 
     # Still transitions to COMPLETED despite upload failure
     assert mock_status.call_args_list[-1][0] == ("run-s3-err", "COMPLETED")

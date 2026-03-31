@@ -1461,7 +1461,7 @@ class TestFullPipelineWithMySQL:
             self._poll_until_terminal(run_id)
 
             # Download the raw CSV artifact from S3
-            csv_key = f"results/{run_id}/k6_raw_0.csv"
+            csv_key = f"results/{run_id}/k6_raw_0_0.csv"
             obj = _s3().get_object(Bucket=S3_BUCKET, Key=csv_key)
             csv_content = obj["Body"].read().decode("utf-8")
             reader = csv.DictReader(io.StringIO(csv_content))

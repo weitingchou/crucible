@@ -52,7 +52,8 @@ def dispatcher_task(
     if mode == "intra_node":
         update_run_status(run_id, "EXECUTING", set_started_at=True)
         k6_executor_task.delay(
-            plan, run_id, segment_flag="0%:100%", local_instances=cluster_size
+            plan, run_id, segment_flag="0%:100%",
+            local_instances=cluster_size, segment_index=0,
         )
         return {"status": "intra_node_dispatched"}
 
@@ -78,7 +79,8 @@ def dispatcher_task(
         start = int(idx * segment_size)
         end = int((idx + 1) * segment_size)
         k6_executor_task.delay(
-            plan, run_id, segment_flag=f"{start}%:{end}%", local_instances=1
+            plan, run_id, segment_flag=f"{start}%:{end}%",
+            local_instances=1, segment_index=idx,
         )
 
     # Monitor waiting room (5-minute timeout)

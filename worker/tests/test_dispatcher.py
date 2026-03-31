@@ -47,6 +47,7 @@ def test_cluster_size_defaults_to_1_when_no_cluster_spec(mock_loader, mock_exec,
     mock_exec.delay.assert_called_once()
     _, kwargs = mock_exec.delay.call_args
     assert kwargs["local_instances"] == 1
+    assert kwargs["segment_index"] == 0
 
 
 @patch("worker.tasks.dispatcher.update_run_status")
