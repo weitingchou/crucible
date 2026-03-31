@@ -1,0 +1,34 @@
+# Full-pipeline e2e test plan — MySQL SUT
+#
+# Used by TestFullPipelineWithMySQL in test_e2e_api.py.
+# Requires: ./tests/start_e2e_env.sh --full
+#
+# The mysql:3306 hostname resolves within the docker network.
+# The worker container runs k6 against MySQL directly.
+
+test_metadata:
+  run_label: "e2e-full-pipeline"
+
+test_environment:
+  env_type: long-lived
+  target_db: e2e_test
+  component_spec:
+    type: mysql
+    cluster_info:
+      host: "mysql:3306"
+      username: root
+      password: root
+  fixtures: []
+
+execution:
+  executor: k6
+  scaling_mode: intra_node
+  concurrency: 2
+  ramp_up: 0s
+  hold_for: 10s
+  workload:
+    - workload_id: e2e-simple
+  failure_detection:
+    enabled: true
+    error_rate_threshold: 0.5
+    abort_delay: 5s

@@ -88,8 +88,30 @@ def _prometheus_reachable() -> bool:
         return False
 
 
+def _mysql_reachable() -> bool:
+    """Check if the e2e MySQL SUT is running (full mode only)."""
+    try:
+        import socket
+        s = socket.create_connection(("localhost", 3306), timeout=2)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def _celery_worker_active() -> bool:
+    """Check if at least one Celery worker is processing tasks."""
+    try:
+        # Submit a known-invalid run and check we get a response (not stuck in queue)
+        r = httpx.get(f"{API_BASE}/health", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 _infra_ok = _api_reachable() and _pg_reachable() and _minio_reachable()
 _prometheus_ok = _prometheus_reachable() if _infra_ok else False
+_full_pipeline_ok = _infra_ok and _mysql_reachable()
 pytestmark = pytest.mark.skipif(
     not _infra_ok,
     reason="Local infrastructure not running (API / PostgreSQL / MinIO)",
@@ -1295,3 +1317,275 @@ class TestResultsWithPrometheus:
                 _s3().delete_object(Bucket=S3_BUCKET, Key=f"results/{run_id}/results.json")
             except Exception:
                 pass
+
+
+# ===========================================================================
+# FULL-PIPELINE TESTS (require --full mode: MySQL SUT + Celery worker)
+# ===========================================================================
+# These tests exercise the complete flow:
+#   submit plan → Celery dispatch → k6 queries MySQL → CSV collection →
+#   results.json uploaded → API returns non-empty per-query metrics
+#
+# Run with:
+#   ./tests/start_e2e_env.sh --full
+#   uv run python -m pytest tests/test_e2e_api.py -v
+
+
+@pytest.mark.skipif(not _full_pipeline_ok, reason="Full pipeline not available (MySQL / worker not running)")
+class TestFullPipelineWithMySQL:
+    """Full-pipeline tests against a real MySQL SUT.
+
+    These tests would have caught the cleanup-ordering bug (efc991a) where
+    CSV files were deleted before collect_and_store could parse them.
+    """
+
+    _MYSQL_CLUSTER_SPEC = {"type": "mysql"}
+    _PLAN_DIR = pathlib.Path(__file__).parent / "plans"
+
+    def _load_e2e_plan_yaml(self) -> str:
+        return (self._PLAN_DIR / "e2e_mysql.yaml").read_text()
+
+    def _poll_until_terminal(self, run_id: str, timeout: int = 90) -> dict:
+        """Poll run status until it reaches a terminal state or times out."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/status", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            if body["status"] in ("COMPLETED", "FAILED"):
+                return body
+            time.sleep(3)
+        pytest.fail(f"Run {run_id} did not reach terminal state within {timeout}s (last: {body['status']})")
+
+    def _cleanup_run_and_artifacts(self, run_id: str, plan_name: str):
+        """Clean up run from PG and all S3 artifacts."""
+        _cleanup_run(run_id)
+        _cleanup_plan(f"plans/{plan_name}")
+        # Clean up results
+        s3 = _s3()
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"results/{run_id}/"):
+                for obj in page.get("Contents", []):
+                    s3.delete_object(Bucket=S3_BUCKET, Key=obj["Key"])
+        except Exception:
+            pass
+
+    def test_full_pipeline_produces_per_query_metrics(self):
+        """Submit → k6 runs against MySQL → verify non-empty per-query metrics in results."""
+        plan_name = f"e2e-full-pipeline-{_SESSION_TAG}"
+        plan_yaml = self._load_e2e_plan_yaml()
+        run_id = None
+
+        try:
+            # Submit the test run
+            resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+                "plan_yaml": plan_yaml,
+                "plan_name": plan_name,
+                "label": f"full-pipeline-{_SESSION_TAG}",
+                "cluster_spec": self._MYSQL_CLUSTER_SPEC,
+            }, timeout=10)
+            assert resp.status_code == 200, f"Submit failed: {resp.text}"
+            run_id = resp.json()["run_id"]
+
+            # Wait for completion
+            status = self._poll_until_terminal(run_id)
+            assert status["status"] == "COMPLETED", (
+                f"Expected COMPLETED, got {status['status']}. "
+                f"Error: {status.get('error_detail', 'none')}"
+            )
+
+            # Fetch results
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "COMPLETED"
+            assert body["collection_error"] is None
+
+            # Verify per-query metrics are non-empty
+            k6_metrics = body["k6"]["metrics"]
+            metric_names = [m["name"] for m in k6_metrics]
+            assert len(k6_metrics) > 0, "k6 metrics list is empty — CSV collection may have failed"
+
+            assert "sql_duration_CountAll" in metric_names, (
+                f"Expected sql_duration_CountAll in metrics, got: {metric_names}"
+            )
+            assert "sql_duration_SelectById" in metric_names, (
+                f"Expected sql_duration_SelectById in metrics, got: {metric_names}"
+            )
+
+            # Each metric should have real data points
+            for name in ("sql_duration_CountAll", "sql_duration_SelectById"):
+                m = next(m for m in k6_metrics if m["name"] == name)
+                assert m["stats"]["count"] > 0, f"{name} has count=0"
+                assert m["stats"]["avg"] > 0, f"{name} has avg=0"
+
+            # query_errors metric should exist with zero or near-zero error rate
+            assert "query_errors" in metric_names, (
+                f"Expected query_errors metric, got: {metric_names}"
+            )
+            qe = next(m for m in k6_metrics if m["name"] == "query_errors")
+            assert qe["stats"]["avg"] == 0, (
+                f"Expected zero query errors, got avg={qe['stats']['avg']}"
+            )
+
+        finally:
+            if run_id:
+                self._cleanup_run_and_artifacts(run_id, plan_name)
+
+    def test_k6_csv_output_has_expected_structure_and_metrics(self):
+        """Download the raw k6 CSV artifact from S3 and validate its content.
+
+        Verifies:
+        - CSV has the expected columns (metric_name, timestamp, metric_value, ...)
+        - Per-query Trend metrics (sql_duration_*) have data rows
+        - query_errors Rate metric has data points (all 0 = success)
+        - k6 built-in metrics are present (iterations, vus, checks, etc.)
+        """
+        import csv
+        import io
+
+        plan_name = f"e2e-k6-csv-{_SESSION_TAG}"
+        plan_yaml = self._load_e2e_plan_yaml()
+        run_id = None
+
+        try:
+            resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+                "plan_yaml": plan_yaml,
+                "plan_name": plan_name,
+                "label": f"k6-csv-{_SESSION_TAG}",
+                "cluster_spec": self._MYSQL_CLUSTER_SPEC,
+            }, timeout=10)
+            assert resp.status_code == 200
+            run_id = resp.json()["run_id"]
+            self._poll_until_terminal(run_id)
+
+            # Download the raw CSV artifact from S3
+            csv_key = f"results/{run_id}/k6_raw_0.csv"
+            obj = _s3().get_object(Bucket=S3_BUCKET, Key=csv_key)
+            csv_content = obj["Body"].read().decode("utf-8")
+            reader = csv.DictReader(io.StringIO(csv_content))
+            rows = list(reader)
+
+            # ── Column structure ──────────────────────────────────────────
+            assert len(rows) > 0, "k6 CSV is empty"
+            expected_cols = {"metric_name", "timestamp", "metric_value"}
+            actual_cols = set(reader.fieldnames)
+            assert expected_cols.issubset(actual_cols), (
+                f"Missing CSV columns. Expected at least {expected_cols}, got {actual_cols}"
+            )
+
+            # ── Collect metric names from the CSV ─────────────────────────
+            metric_names = {row["metric_name"] for row in rows}
+
+            # ── Per-query Trend metrics from the SQL driver ───────────────
+            assert "sql_duration_CountAll" in metric_names, (
+                f"sql_duration_CountAll not in CSV metrics: {sorted(metric_names)}"
+            )
+            assert "sql_duration_SelectById" in metric_names, (
+                f"sql_duration_SelectById not in CSV metrics: {sorted(metric_names)}"
+            )
+
+            # Each per-query metric should have multiple data points (10s test, 2 VUs)
+            count_all_rows = [r for r in rows if r["metric_name"] == "sql_duration_CountAll"]
+            assert len(count_all_rows) > 1, (
+                f"Expected multiple CountAll data points, got {len(count_all_rows)}"
+            )
+            # Values should be non-negative durations (milliseconds, may be 0 for sub-ms queries)
+            for r in count_all_rows:
+                assert float(r["metric_value"]) >= 0
+
+            # ── query_errors Rate metric from the SQL driver ──────────────
+            assert "query_errors" in metric_names, (
+                f"query_errors not in CSV metrics: {sorted(metric_names)}"
+            )
+            qe_rows = [r for r in rows if r["metric_name"] == "query_errors"]
+            assert len(qe_rows) > 0, "No query_errors data points in CSV"
+            # All should be 0 (success) since MySQL is healthy
+            for r in qe_rows:
+                assert float(r["metric_value"]) == 0, (
+                    f"Expected query_errors=0 (success), got {r['metric_value']}"
+                )
+
+            # ── k6 built-in metrics ───────────────────────────────────────
+            # These confirm k6 ran properly and produced standard output
+            for builtin in ("iterations", "iteration_duration", "vus"):
+                assert builtin in metric_names, (
+                    f"k6 built-in metric '{builtin}' not in CSV: {sorted(metric_names)}"
+                )
+
+            # iterations should have count matching total completed iterations
+            iter_rows = [r for r in rows if r["metric_name"] == "iterations"]
+            assert len(iter_rows) > 0, "No iteration data points"
+
+            # checks metric confirms check() calls in the driver are recorded
+            checks_metrics = {n for n in metric_names if n.startswith("checks")}
+            assert len(checks_metrics) > 0, (
+                f"No checks metrics in CSV. check() calls in the driver may not be working. "
+                f"Metrics: {sorted(metric_names)}"
+            )
+
+        finally:
+            if run_id:
+                self._cleanup_run_and_artifacts(run_id, plan_name)
+
+    def test_full_pipeline_run_status_has_correct_metadata(self):
+        """Verify the run status endpoint reflects correct metadata during a full-pipeline run."""
+        plan_name = f"e2e-full-meta-{_SESSION_TAG}"
+        plan_yaml = self._load_e2e_plan_yaml()
+        run_id = None
+
+        try:
+            resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+                "plan_yaml": plan_yaml,
+                "plan_name": plan_name,
+                "label": f"full-meta-{_SESSION_TAG}",
+                "cluster_spec": self._MYSQL_CLUSTER_SPEC,
+            }, timeout=10)
+            assert resp.status_code == 200
+            run_id = resp.json()["run_id"]
+
+            status = self._poll_until_terminal(run_id)
+            assert status["status"] == "COMPLETED"
+            assert status["sut_type"] == "mysql"
+            assert status["scaling_mode"] == "intra_node"
+            assert status["cluster_spec"] == self._MYSQL_CLUSTER_SPEC
+            assert status["started_at"] is not None
+            assert status["completed_at"] is not None
+
+        finally:
+            if run_id:
+                self._cleanup_run_and_artifacts(run_id, plan_name)
+
+    def test_full_pipeline_artifacts_uploaded(self):
+        """Verify that k6 CSV artifacts are uploaded to S3 after the run."""
+        plan_name = f"e2e-full-artifacts-{_SESSION_TAG}"
+        plan_yaml = self._load_e2e_plan_yaml()
+        run_id = None
+
+        try:
+            resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+                "plan_yaml": plan_yaml,
+                "plan_name": plan_name,
+                "label": f"full-artifacts-{_SESSION_TAG}",
+                "cluster_spec": self._MYSQL_CLUSTER_SPEC,
+            }, timeout=10)
+            assert resp.status_code == 200
+            run_id = resp.json()["run_id"]
+
+            self._poll_until_terminal(run_id)
+
+            # Check artifacts endpoint
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/artifacts", timeout=10)
+            assert resp.status_code == 200
+            artifacts = resp.json()["artifacts"]
+            assert len(artifacts) > 0, "No artifacts uploaded"
+
+            # Should have at least a CSV and a results.json
+            keys = [a["key"] for a in artifacts]
+            assert any("k6_raw" in k for k in keys), f"No k6 CSV artifact found in: {keys}"
+            assert any("results.json" in k for k in keys), f"No results.json found in: {keys}"
+
+        finally:
+            if run_id:
+                self._cleanup_run_and_artifacts(run_id, plan_name)

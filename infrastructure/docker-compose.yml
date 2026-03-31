@@ -121,6 +121,43 @@ services:
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  # ── MySQL (full e2e testing SUT) ──────────────────────────────────────────────
+  # A lightweight MySQL instance used as the target database for full-pipeline
+  # e2e tests.  These tests exercise the complete flow: submit plan → Celery
+  # dispatch → k6 queries a real database → CSV collection → results API.
+  #
+  # Start with: ./tests/start_e2e_env.sh --full
+  # Or manually: docker compose --profile e2e up -d mysql worker
+
+  mysql:
+    profiles: [e2e]
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: e2e_test
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql-init:
+    profiles: [e2e]
+    image: mysql:8.0
+    entrypoint: >
+      sh -c '
+        until mysqladmin ping -h mysql -u root -proot --silent; do sleep 1; done &&
+        mysql -h mysql -u root -proot e2e_test -e "
+          CREATE TABLE IF NOT EXISTS test_data (id INT PRIMARY KEY, value VARCHAR(50));
+          INSERT IGNORE INTO test_data VALUES (1, \"alpha\"), (2, \"beta\"), (3, \"gamma\");
+        "
+      '
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   # ── Apache Doris (local e2e testing only) ────────────────────────────────────
   # Start with: docker compose --profile doris up
   doris-fe:

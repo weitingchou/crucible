@@ -2,24 +2,33 @@
 #
 # Start the local e2e test environment for Crucible.
 #
-# This script:
-#   1. Starts MinIO, PostgreSQL, and RabbitMQ via docker compose
-#   2. Waits for all services to become healthy
-#   3. Applies the DB schema (idempotent — safe to re-run)
-#   4. Starts the Control Plane API on localhost:8000
+# Two modes:
+#   Default — API-only tests (no SUT, no worker):
+#     ./tests/start_e2e_env.sh
+#     uv run python -m pytest tests/test_e2e_api.py -v
 #
-# Usage:
-#   ./tests/start_e2e_env.sh          # start everything
-#   ./tests/start_e2e_env.sh --stop   # tear down
+#   Full — includes MySQL SUT + Celery worker for full-pipeline tests:
+#     ./tests/start_e2e_env.sh --full
+#     uv run python -m pytest tests/test_e2e_api.py -v
 #
-# After the environment is up, run the tests:
-#   uv run python -m pytest tests/test_e2e_api.py -v
+#   Tear down (works for both modes):
+#     ./tests/start_e2e_env.sh --stop
+#
+# Full mode additionally:
+#   - Starts a MySQL 8.0 container as the test SUT
+#   - Seeds it with a small test_data table
+#   - Builds and starts the Celery worker container (which includes the k6 binary)
+#   - Uploads the e2e workload SQL to MinIO
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFRA_DIR="$REPO_ROOT/infrastructure"
 API_PID_FILE="$REPO_ROOT/.e2e-api.pid"
+FULL_MODE=false
+if [[ "${1:-}" == "--full" ]]; then
+    FULL_MODE=true
+fi
 
 # ---------------------------------------------------------------------------
 # Tear down
@@ -44,7 +53,7 @@ if [[ "${1:-}" == "--stop" ]]; then
 
     echo "  Stopping docker services..."
     cd "$INFRA_DIR"
-    docker compose down 2>/dev/null || true
+    docker compose --profile e2e --profile doris down 2>/dev/null || true
 
     echo "Done."
     exit 0
@@ -168,11 +177,75 @@ for i in $(seq 1 20); do
 done
 
 # ---------------------------------------------------------------------------
+# 5. Full mode: MySQL SUT + Celery worker
+# ---------------------------------------------------------------------------
+if [[ "$FULL_MODE" == "true" ]]; then
+    echo "==> Starting MySQL SUT..."
+    cd "$INFRA_DIR"
+    docker compose --profile e2e up -d mysql
+
+    echo "  Waiting for MySQL to become healthy..."
+    mysql_wait=0
+    while true; do
+        status=$(docker compose --profile e2e ps --format '{{.Health}}' mysql 2>/dev/null || echo "unknown")
+        if [[ "$status" == "healthy" ]]; then
+            echo "  MySQL healthy."
+            break
+        fi
+        if [[ $mysql_wait -ge 60 ]]; then
+            echo "ERROR: MySQL did not become healthy within 60s."
+            exit 1
+        fi
+        sleep 2
+        ((mysql_wait+=2))
+    done
+
+    echo "==> Seeding MySQL test data..."
+    docker compose --profile e2e up mysql-init 2>/dev/null
+    echo "  MySQL seeded."
+
+    echo "==> Uploading e2e workload to MinIO..."
+    cd "$REPO_ROOT"
+    uv run python -c "
+import boto3
+s3 = boto3.client('s3',
+    endpoint_url='http://localhost:9000',
+    aws_access_key_id='minioadmin',
+    aws_secret_access_key='minioadmin',
+    region_name='us-east-1')
+with open('tests/workloads/e2e_simple.sql') as f:
+    content = f.read()
+s3.put_object(Bucket='project-crucible-storage', Key='workloads/e2e-simple', Body=content.encode())
+print('  Workload uploaded: workloads/e2e-simple')
+"
+
+    echo "==> Building and starting Celery worker..."
+    cd "$INFRA_DIR"
+    docker compose --profile e2e up -d --build worker
+    echo "  Waiting for worker to connect..."
+    for i in $(seq 1 30); do
+        if docker compose --profile e2e logs worker 2>/dev/null | grep -q "celery.*ready"; then
+            echo "  Worker ready."
+            break
+        fi
+        if [[ $i -eq 30 ]]; then
+            echo "WARNING: Worker may not be ready yet. Check logs if full-pipeline tests fail."
+        fi
+        sleep 2
+    done
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 echo ""
 echo "============================================"
 echo "  E2E environment is ready!"
+if [[ "$FULL_MODE" == "true" ]]; then
+echo "  Mode: FULL (MySQL SUT + worker)"
+else
+echo "  Mode: DEFAULT (API-only)"
+fi
 echo ""
 echo "  Run tests:"
 echo "    uv run python -m pytest tests/test_e2e_api.py -v"

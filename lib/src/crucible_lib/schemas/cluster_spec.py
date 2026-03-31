@@ -32,9 +32,19 @@ class DorisClusterSpec(BaseModel):
     backend_node: NodeSpec | None = None
 
 
+class MySQLClusterSpec(BaseModel):
+    """Cluster spec for MySQL / MySQL-wire-compatible databases."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["mysql"]
+    version: str | None = None
+    node: NodeSpec | None = None
+
+
 # Extend this union as new SUT types are added (e.g. CassandraClusterSpec).
 ClusterSpec = Annotated[
-    Union[DorisClusterSpec],
+    Union[DorisClusterSpec, MySQLClusterSpec],
     Field(discriminator="type"),
 ]
 
