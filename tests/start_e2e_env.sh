@@ -219,17 +219,19 @@ s3.put_object(Bucket='project-crucible-storage', Key='workloads/e2e-simple', Bod
 print('  Workload uploaded: workloads/e2e-simple')
 "
 
-    echo "==> Building and starting Celery worker..."
+    echo "==> Building and starting Celery workers (2 replicas for inter-node tests)..."
     cd "$INFRA_DIR"
-    docker compose --profile e2e up -d --build worker
-    echo "  Waiting for worker to connect..."
+    docker compose --profile e2e up -d --build --scale worker=2 worker
+    echo "  Waiting for workers to connect..."
+    workers_ready=0
     for i in $(seq 1 30); do
-        if docker compose --profile e2e logs worker 2>/dev/null | grep -q "celery.*ready"; then
-            echo "  Worker ready."
+        workers_ready=$(docker compose --profile e2e logs worker 2>/dev/null | grep -c "celery.*ready" || true)
+        if [[ $workers_ready -ge 2 ]]; then
+            echo "  $workers_ready workers ready."
             break
         fi
         if [[ $i -eq 30 ]]; then
-            echo "WARNING: Worker may not be ready yet. Check logs if full-pipeline tests fail."
+            echo "WARNING: Only $workers_ready/2 workers ready. Inter-node tests may fail."
         fi
         sleep 2
     done

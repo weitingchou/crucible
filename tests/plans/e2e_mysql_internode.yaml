@@ -1,0 +1,36 @@
+# Full-pipeline e2e test plan — inter-node scaling mode
+#
+# Used by test_full_pipeline_inter_node_produces_metrics in test_e2e_api.py.
+# Requires: ./tests/start_e2e_env.sh --full (starts 2 worker replicas)
+#
+# The dispatcher fans out 2 executor tasks (one per backend_node.replica).
+# Each executor checks into the PostgreSQL waiting room, waits for the
+# global START signal, then runs k6 with its assigned execution segment.
+# The last executor to finish collects and merges results from both segments.
+
+test_metadata:
+  run_label: "e2e-inter-node"
+
+test_environment:
+  env_type: long-lived
+  target_db: e2e_test
+  component_spec:
+    type: mysql
+    cluster_info:
+      host: "mysql:3306"
+      username: root
+      password: root
+  fixtures: []
+
+execution:
+  executor: k6
+  scaling_mode: inter_node
+  concurrency: 1
+  ramp_up: 0s
+  hold_for: 10s
+  workload:
+    - workload_id: e2e-simple
+  failure_detection:
+    enabled: true
+    error_rate_threshold: 0.5
+    abort_delay: 5s

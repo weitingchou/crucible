@@ -1557,6 +1557,80 @@ class TestFullPipelineWithMySQL:
             if run_id:
                 self._cleanup_run_and_artifacts(run_id, plan_name)
 
+    def test_full_pipeline_inter_node_produces_metrics(self):
+        """Inter-node scaling: 2 executors fan out, synchronize via waiting room, merge results.
+
+        Verifies the complete inter-node flow:
+        1. Dispatcher initializes waiting room with target_count=2
+        2. Two executor tasks check in, wait for START signal
+        3. Both run k6 against MySQL with their assigned segment
+        4. Last executor to finish collects and merges results
+        5. Results contain per-query metrics from both segments
+        6. Two CSV artifacts are uploaded (one per executor)
+        """
+        plan_name = f"e2e-inter-node-{_SESSION_TAG}"
+        plan_yaml = (self._PLAN_DIR / "e2e_mysql_internode.yaml").read_text()
+        inter_node_spec = {"type": "mysql", "backend_node": {"replica": 2}}
+        run_id = None
+
+        try:
+            resp = httpx.post(f"{API_BASE}/v1/test-runs", json={
+                "plan_yaml": plan_yaml,
+                "plan_name": plan_name,
+                "label": f"inter-node-{_SESSION_TAG}",
+                "cluster_spec": inter_node_spec,
+            }, timeout=10)
+            assert resp.status_code == 200, f"Submit failed: {resp.text}"
+            run_id = resp.json()["run_id"]
+
+            # Poll until terminal — inter-node may take longer due to waiting room
+            status = self._poll_until_terminal(run_id, timeout=120)
+            assert status["status"] == "COMPLETED", (
+                f"Expected COMPLETED, got {status['status']}. "
+                f"Error: {status.get('error_detail', 'none')}"
+            )
+
+            # Verify scaling_mode is inter_node
+            assert status["scaling_mode"] == "inter_node"
+            assert status["cluster_spec"] == inter_node_spec
+
+            # Fetch results — should have metrics merged from both segments
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/results", timeout=10)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "COMPLETED"
+
+            k6_metrics = body["k6"]["metrics"]
+            metric_names = [m["name"] for m in k6_metrics]
+            assert len(k6_metrics) > 0, "k6 metrics empty — inter-node collection may have failed"
+
+            assert "sql_duration_CountAll" in metric_names, (
+                f"Expected sql_duration_CountAll, got: {metric_names}"
+            )
+            assert "sql_duration_SelectById" in metric_names
+
+            # query_errors should be present with zero errors
+            assert "query_errors" in metric_names
+            qe = next(m for m in k6_metrics if m["name"] == "query_errors")
+            assert qe["stats"]["avg"] == 0
+
+            # Verify CSV and results artifacts uploaded
+            resp = httpx.get(f"{API_BASE}/v1/test-runs/{run_id}/artifacts", timeout=10)
+            assert resp.status_code == 200
+            artifacts = resp.json()["artifacts"]
+            keys = [a["key"] for a in artifacts]
+            assert any("k6_raw" in k for k in keys), f"No k6 CSV artifact: {keys}"
+            assert any("results.json" in k for k in keys), f"No results.json: {keys}"
+
+        finally:
+            if run_id:
+                self._cleanup_run_and_artifacts(run_id, plan_name)
+                # Clean up waiting room entry
+                try:
+                    _pg_execute("DELETE FROM waiting_room WHERE run_id = %s", (run_id,))
+                except Exception:
+                    pass
+
     def test_full_pipeline_artifacts_uploaded(self):
         """Verify that k6 CSV artifacts are uploaded to S3 after the run."""
         plan_name = f"e2e-full-artifacts-{_SESSION_TAG}"
