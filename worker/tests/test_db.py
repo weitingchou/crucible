@@ -6,13 +6,16 @@ import pytest
 
 from worker.db import (
     _get_conn,
-    update_run_status,
-    init_waiting_room,
+    acquire_sut_lock,
     get_ready_count,
-    set_start_signal,
-    increment_ready_worker,
+    get_run_status,
     get_start_signal,
     increment_completed_and_check,
+    increment_ready_worker,
+    init_waiting_room,
+    release_sut_lock,
+    set_start_signal,
+    update_run_status,
 )
 
 
@@ -216,3 +219,44 @@ def test_increment_completed_and_check_returns_true_when_no_row():
     with patch("worker.db._get_conn", return_value=conn):
         result = increment_completed_and_check("r1")
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# get_run_status
+# ---------------------------------------------------------------------------
+
+def test_get_run_status_returns_value():
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = ("EXECUTING",)
+    with patch("worker.db._get_conn", return_value=conn):
+        result = get_run_status("r1")
+    assert result == "EXECUTING"
+
+
+def test_get_run_status_returns_none_when_missing():
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = None
+    with patch("worker.db._get_conn", return_value=conn):
+        result = get_run_status("r1")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# acquire_sut_lock / release_sut_lock
+# ---------------------------------------------------------------------------
+
+def test_acquire_sut_lock_calls_pg_advisory_lock():
+    conn, cursor = _mock_conn()
+    with patch("worker.db._get_conn", return_value=conn):
+        acquire_sut_lock(12345)
+    sql = cursor.execute.call_args[0][0]
+    assert "pg_advisory_lock" in sql
+
+
+def test_release_sut_lock_calls_pg_advisory_unlock():
+    conn, cursor = _mock_conn()
+    with patch("worker.db._get_conn", return_value=conn):
+        release_sut_lock(12345)
+    sql = cursor.execute.call_args[0][0]
+    assert "pg_advisory_unlock" in sql
+    conn.commit.assert_called_once()

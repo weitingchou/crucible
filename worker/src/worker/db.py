@@ -95,6 +95,30 @@ def get_start_signal(run_id: str) -> str:
         return row[0] if row else "WAIT"
 
 
+def get_run_status(run_id: str) -> str | None:
+    """Read the current status of a run from test_runs."""
+    conn = _get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM test_runs WHERE run_id = %s", (run_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def acquire_sut_lock(lock_key: int) -> None:
+    """Acquire a PostgreSQL session-level advisory lock.  Blocks until available."""
+    conn = _get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+
+
+def release_sut_lock(lock_key: int) -> None:
+    """Release a PostgreSQL session-level advisory lock."""
+    conn = _get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
+    conn.commit()
+
+
 def increment_completed_and_check(run_id: str) -> bool:
     """Atomically increment completed_count and return True if all executors are done."""
     conn = _get_conn()

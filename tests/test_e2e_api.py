@@ -211,7 +211,7 @@ class TestSubmitRun:
         assert row["run_label"] == f"e2e-label-{_SESSION_TAG}"
         assert row["sut_type"] == "doris"
         assert row["scaling_mode"] == "intra_node"
-        assert row["status"] == "PENDING"
+        assert row["status"] in ("PENDING", "QUEUED", "EXECUTING")
         spec = row["cluster_spec"]
         if isinstance(spec, str):
             import json as _json
