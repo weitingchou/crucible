@@ -104,12 +104,54 @@ def register_tools(mcp: FastMCP) -> None:
                     duration: "3m"            # how long the fault persists
 
         The ``chaos_spec`` section enables resilience testing by injecting
-        infrastructure faults during the load test.  Chaos experiments are
-        synchronized with the k6 execution lifecycle: the ``start_after``
-        delay allows baseline metrics to form before injection, and faults
-        are automatically recovered after ``duration`` expires.  For K8s
-        targets, Chaos Mesh must be pre-installed on the cluster.  For EC2
-        targets, the ``chaosd`` agent must be running on the target host.
+        infrastructure faults during the load test.  Chaos experiments run
+        **sequentially** (not in parallel) and are synchronized with the
+        k6 execution lifecycle.  For K8s targets, Chaos Mesh must be
+        pre-installed on the cluster.  For EC2 targets, the ``chaosd``
+        agent must be running on the target host.  Fields:
+
+        - ``engine``: must be ``"chaos-mesh"``.  This is the only
+          supported engine; it selects the Chaos Mesh CRD backend for
+          K8s or the chaosd REST API for EC2.
+        - ``experiments``: list of fault experiments (at least one).
+          Each experiment has:
+
+          - ``name``: unique identifier within the spec.  Used in log
+            messages and as part of the Chaos Mesh CRD name on K8s
+            (``crucible-{run_id}-{name}``).
+          - ``fault_type``: the Chaos Mesh CRD kind — one of
+            ``networkchaos``, ``podchaos``, ``stresschaos``, or
+            ``iochaos``.  For EC2 (chaosd), this is the chaosd attack
+            type (e.g. ``stress-cpu``, ``network-loss``).
+          - ``target``: where to inject the fault.
+
+            - ``env_type``: ``"k8s"`` (Chaos Mesh CRD) or ``"ec2"``
+              (chaosd REST API).
+            - ``namespace`` (k8s only): the K8s namespace containing
+              the target pods.
+            - ``selector`` (k8s only): K8s label selector dict used
+              in the CRD's ``spec.selector.labelSelectors`` to match
+              target pods (e.g. ``app.kubernetes.io/component: be``).
+            - ``address`` (ec2 only): IP of the host running the
+              chaosd agent (port 31767).
+
+          - ``parameters``: fault-specific configuration passed
+            directly into the Chaos Mesh CRD ``spec`` (merged as-is).
+            Refer to the Chaos Mesh docs for the schema of each fault
+            type — e.g. ``networkchaos`` expects ``action``, ``delay``,
+            ``loss``, etc.
+          - ``schedule``: timing control for the experiment.
+
+            - ``start_after``: delay before injection, in k6 duration
+              format (e.g. ``"1m"``, ``"30s"``).  This allows baseline
+              metrics to form before the fault is applied.
+            - ``duration``: how long the fault persists before
+              automatic recovery (e.g. ``"3m"``).
+
+          Because experiments run sequentially, the total chaos wall
+          time is the sum of all ``(start_after + duration)`` values.
+          For example, two experiments with ``start_after: 1m`` +
+          ``duration: 2m`` each will take 6 minutes total.
 
         The ``failure_detection`` section configures automatic SUT failure
         detection.  When enabled (the default), the k6 driver tracks a
