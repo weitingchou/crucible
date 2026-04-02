@@ -95,11 +95,12 @@ class ChaosScheduler(threading.Thread):
             return  # cancelled during hold — _recover_all handles cleanup
 
         # Normal recovery
+        raw_status = None
         try:
-            crd_status = engine.collect_status(experiment, self._run_id, handle)
+            raw_status = engine.collect_status(experiment, self._run_id, handle)
         except Exception:
             logger.exception("Failed to collect status for '%s'", experiment["name"])
-            crd_status = None
+        engine_status = engine.normalize_status(raw_status) if raw_status else None
 
         try:
             engine.recover(experiment, self._run_id, handle)
@@ -109,7 +110,8 @@ class ChaosScheduler(threading.Thread):
                     (e, eng, h, ts) for e, eng, h, ts in self._active if h != handle
                 ]
                 self._events.append(self._build_event(
-                    experiment, injected_at, recovered_at, crd_status,
+                    experiment, injected_at, recovered_at,
+                    engine_status, raw_status,
                 ))
             logger.info("Chaos experiment '%s': recovered", experiment["name"])
         except Exception:
@@ -121,19 +123,21 @@ class ChaosScheduler(threading.Thread):
             active = list(self._active)
             self._active.clear()
         for experiment, engine, handle, injected_at in active:
-            crd_status = None
+            raw_status = None
             try:
-                crd_status = engine.collect_status(experiment, self._run_id, handle)
+                raw_status = engine.collect_status(experiment, self._run_id, handle)
             except Exception:
                 logger.exception(
                     "Chaos cleanup: failed to collect status for '%s'", experiment["name"],
                 )
+            engine_status = engine.normalize_status(raw_status) if raw_status else None
             try:
                 engine.recover(experiment, self._run_id, handle)
                 recovered_at = datetime.now(timezone.utc).isoformat()
                 with self._lock:
                     self._events.append(self._build_event(
-                        experiment, injected_at, recovered_at, crd_status,
+                        experiment, injected_at, recovered_at,
+                        engine_status, raw_status,
                     ))
                 logger.info("Chaos cleanup: recovered '%s'", experiment["name"])
             except Exception:
@@ -143,7 +147,8 @@ class ChaosScheduler(threading.Thread):
                 # Still record the event with no recovery time
                 with self._lock:
                     self._events.append(self._build_event(
-                        experiment, injected_at, None, crd_status,
+                        experiment, injected_at, None,
+                        engine_status, raw_status,
                     ))
 
     @staticmethod
@@ -151,7 +156,8 @@ class ChaosScheduler(threading.Thread):
         experiment: dict,
         injected_at: str,
         recovered_at: str | None,
-        crd_status: dict | None,
+        engine_status: dict | None,
+        raw_engine_status: dict | None,
     ) -> dict:
         duration_seconds = None
         if injected_at and recovered_at:
@@ -167,5 +173,6 @@ class ChaosScheduler(threading.Thread):
             "recovered_at": recovered_at,
             "duration_seconds": duration_seconds,
             "engine": experiment["target"]["env_type"],
-            "crd_status": crd_status,
+            "engine_status": engine_status,
+            "raw_engine_status": raw_engine_status,
         }

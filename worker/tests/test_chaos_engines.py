@@ -273,12 +273,238 @@ def test_k8s_collect_status_returns_none_on_error(mock_client, mock_config):
     assert status is None
 
 
-def test_chaosd_collect_status_returns_none():
-    """ChaosdEngine inherits the default collect_status returning None."""
+@patch("worker.chaos_injector.chaosd_engine.requests")
+def test_chaosd_collect_status_returns_matching_record(mock_requests):
+    """collect_status queries /api/experiments/ and returns the matching UID record."""
     from worker.chaos_injector.chaosd_engine import ChaosdEngine
 
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [
+        {"uid": "other-uid", "status": "success", "kind": "stress"},
+        {
+            "uid": "abc-123",
+            "status": "success",
+            "kind": "network",
+            "action": "delay",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:02:00Z",
+            "launch_mode": "svr",
+        },
+    ]
+    mock_requests.get.return_value = mock_resp
+
     engine = ChaosdEngine()
-    assert engine.collect_status({}, "run-1", "handle") is None
+    experiment = {"target": {"env_type": "ec2", "address": "10.0.1.5"}}
+    status = engine.collect_status(experiment, "run-1", "abc-123")
+
+    assert status is not None
+    assert status["uid"] == "abc-123"
+    assert status["status"] == "success"
+    assert status["kind"] == "network"
+    assert status["action"] == "delay"
+    assert status["created_at"] == "2025-01-01T00:00:00Z"
+    assert status["updated_at"] == "2025-01-01T00:02:00Z"
+    mock_requests.get.assert_called_once_with(
+        "http://10.0.1.5:31767/api/experiments/", timeout=10,
+    )
+
+
+@patch("worker.chaos_injector.chaosd_engine.requests")
+def test_chaosd_collect_status_returns_none_when_uid_not_found(mock_requests):
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [{"uid": "other-uid", "status": "success"}]
+    mock_requests.get.return_value = mock_resp
+
+    engine = ChaosdEngine()
+    experiment = {"target": {"env_type": "ec2", "address": "10.0.1.5"}}
+    assert engine.collect_status(experiment, "run-1", "missing-uid") is None
+
+
+@patch("worker.chaos_injector.chaosd_engine.requests")
+def test_chaosd_collect_status_returns_none_on_error(mock_requests):
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    mock_requests.get.side_effect = RuntimeError("connection refused")
+
+    engine = ChaosdEngine()
+    experiment = {"target": {"env_type": "ec2", "address": "10.0.1.5"}}
+    assert engine.collect_status(experiment, "run-1", "abc-123") is None
+
+
+# ---------------------------------------------------------------------------
+# K8sChaosEngine.normalize_status
+# ---------------------------------------------------------------------------
+
+def test_k8s_normalize_status_recovered():
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    raw = {
+        "conditions": [
+            {"type": "AllInjected", "status": "True", "lastTransitionTime": "2025-01-01T00:01:00Z"},
+            {"type": "AllRecovered", "status": "True", "lastTransitionTime": "2025-01-01T00:03:00Z"},
+        ],
+        "records": [
+            {"id": "doris-be-0", "phase": "Injected", "injectTime": "2025-01-01T00:01:00Z", "recoverTime": "2025-01-01T00:03:00Z"},
+            {"id": "doris-be-1", "phase": "Injected", "injectTime": "2025-01-01T00:01:01Z", "recoverTime": "2025-01-01T00:03:01Z"},
+        ],
+    }
+    result = K8sChaosEngine.normalize_status(raw)
+    assert result["status"] == "recovered"
+    assert result["created_at"] == "2025-01-01T00:01:00Z"
+    assert result["updated_at"] == "2025-01-01T00:03:00Z"
+    assert len(result["targets"]) == 2
+    assert result["targets"][0]["id"] == "doris-be-0"
+    assert result["targets"][0]["inject_time"] == "2025-01-01T00:01:00Z"
+    assert result["targets"][1]["id"] == "doris-be-1"
+
+
+def test_k8s_normalize_status_injected():
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    raw = {
+        "conditions": [
+            {"type": "AllInjected", "status": "True", "lastTransitionTime": "2025-01-01T00:01:00Z"},
+        ],
+        "records": [{"id": "pod-0", "injectTime": "2025-01-01T00:01:00Z"}],
+    }
+    result = K8sChaosEngine.normalize_status(raw)
+    assert result["status"] == "injected"
+    assert result["updated_at"] == "2025-01-01T00:01:00Z"
+    assert result["targets"][0]["recover_time"] is None
+
+
+def test_k8s_normalize_status_error():
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    raw = {"conditions": [], "records": []}
+    result = K8sChaosEngine.normalize_status(raw)
+    assert result["status"] == "error"
+    assert result["targets"] == []
+
+
+def test_k8s_normalize_status_none_on_empty():
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    assert K8sChaosEngine.normalize_status({}) is None
+    assert K8sChaosEngine.normalize_status(None) is None
+
+
+# ---------------------------------------------------------------------------
+# ChaosdEngine.normalize_status
+# ---------------------------------------------------------------------------
+
+def test_chaosd_normalize_status_success():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {
+        "uid": "abc-123",
+        "status": "success",
+        "kind": "network",
+        "action": "delay",
+        "created_at": "2025-01-01T00:01:00Z",
+        "updated_at": "2025-01-01T00:03:00Z",
+    }
+    result = ChaosdEngine.normalize_status(raw)
+    assert result["status"] == "recovered"
+    assert result["created_at"] == "2025-01-01T00:01:00Z"
+    assert result["updated_at"] == "2025-01-01T00:03:00Z"
+    assert len(result["targets"]) == 1
+    assert result["targets"][0]["id"] == "abc-123"
+    assert result["targets"][0]["inject_time"] == "2025-01-01T00:01:00Z"
+    assert result["targets"][0]["recover_time"] == "2025-01-01T00:03:00Z"
+
+
+def test_chaosd_normalize_status_destroyed():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {"uid": "x", "status": "destroyed", "created_at": "t1", "updated_at": "t2"}
+    assert ChaosdEngine.normalize_status(raw)["status"] == "recovered"
+
+
+def test_chaosd_normalize_status_error():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {"uid": "x", "status": "error", "created_at": "t1", "updated_at": "t2"}
+    assert ChaosdEngine.normalize_status(raw)["status"] == "error"
+
+
+def test_chaosd_normalize_status_created_means_injected():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {"uid": "x", "status": "created", "created_at": "t1", "updated_at": "t1"}
+    result = ChaosdEngine.normalize_status(raw)
+    assert result["status"] == "injected"
+    assert result["targets"][0]["recover_time"] is None
+
+
+def test_chaosd_normalize_status_error_has_no_recover_time():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {"uid": "x", "status": "error", "created_at": "t1", "updated_at": "t2"}
+    result = ChaosdEngine.normalize_status(raw)
+    assert result["status"] == "error"
+    assert result["targets"][0]["recover_time"] is None
+
+
+def test_chaosd_normalize_status_none_on_empty():
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    assert ChaosdEngine.normalize_status({}) is None
+    assert ChaosdEngine.normalize_status(None) is None
+
+
+def test_chaosd_normalize_status_missing_fields():
+    """normalize_status handles records with missing optional fields gracefully."""
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    raw = {"status": "success"}
+    result = ChaosdEngine.normalize_status(raw)
+    assert result["status"] == "recovered"
+    assert result["created_at"] is None
+    assert result["updated_at"] is None
+    assert result["targets"][0]["id"] == ""
+    assert result["targets"][0]["inject_time"] is None
+
+
+# ---------------------------------------------------------------------------
+# K8sChaosEngine.normalize_status — edge cases
+# ---------------------------------------------------------------------------
+
+def test_k8s_normalize_status_partial_recovery():
+    """AllInjected=True but AllRecovered present with status=False → still injected."""
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    raw = {
+        "conditions": [
+            {"type": "AllInjected", "status": "True", "lastTransitionTime": "2025-01-01T00:01:00Z"},
+            {"type": "AllRecovered", "status": "False", "lastTransitionTime": "2025-01-01T00:02:00Z"},
+        ],
+        "records": [
+            {"id": "pod-0", "injectTime": "2025-01-01T00:01:00Z", "recoverTime": None},
+        ],
+    }
+    result = K8sChaosEngine.normalize_status(raw)
+    assert result["status"] == "injected"
+    assert result["targets"][0]["recover_time"] is None
+
+
+def test_k8s_normalize_status_missing_record_fields():
+    """Records with missing id/times still produce valid targets."""
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    raw = {
+        "conditions": [
+            {"type": "AllInjected", "status": "True", "lastTransitionTime": "2025-01-01T00:01:00Z"},
+        ],
+        "records": [{}],
+    }
+    result = K8sChaosEngine.normalize_status(raw)
+    assert len(result["targets"]) == 1
+    assert result["targets"][0]["id"] == ""
+    assert result["targets"][0]["inject_time"] is None
+    assert result["targets"][0]["recover_time"] is None
 
 
 # ---------------------------------------------------------------------------

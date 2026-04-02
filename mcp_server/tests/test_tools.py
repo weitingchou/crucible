@@ -582,7 +582,13 @@ async def test_get_test_results_includes_chaos_events(mcp_app):
                     "recovered_at": "2025-03-15T14:33:00Z",
                     "duration_seconds": 120.0,
                     "engine": "k8s",
-                    "crd_status": None,
+                    "engine_status": {
+                        "status": "recovered",
+                        "created_at": "2025-03-15T14:31:00Z",
+                        "updated_at": "2025-03-15T14:33:00Z",
+                        "targets": [{"id": "pod-0", "inject_time": "2025-03-15T14:31:00Z", "recover_time": "2025-03-15T14:33:00Z"}],
+                    },
+                    "raw_engine_status": None,
                 }
             ]
         },

@@ -336,7 +336,10 @@ async def get_run_results(run_id: str) -> TestRunResults:
     - ``results/{run_id}/chaos_events.json`` — chaos inject/recover timeline
       (uploaded by the dispatcher)
 
-    The ``chaos.events`` list is empty when no chaos spec was configured.
+    Each chaos event includes ``engine_status`` (unified schema comparable
+    across K8s and EC2 engines) and ``raw_engine_status`` (original engine
+    response for debugging).  The ``chaos.events`` list is empty when no
+    chaos spec was configured.
     """
     row = await db.get_run(run_id)
     if not row:

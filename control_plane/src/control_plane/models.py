@@ -199,6 +199,19 @@ class ObservabilityResults(BaseModel):
     sources: list[ObservabilitySourceResult] = Field(default_factory=list)
 
 
+class ChaosTargetStatus(BaseModel):
+    id: str
+    inject_time: str | None = None
+    recover_time: str | None = None
+
+
+class ChaosEngineStatus(BaseModel):
+    status: str
+    created_at: str | None = None
+    updated_at: str | None = None
+    targets: list[ChaosTargetStatus] = Field(default_factory=list)
+
+
 class ChaosEvent(BaseModel):
     experiment: str
     fault_type: str
@@ -207,7 +220,8 @@ class ChaosEvent(BaseModel):
     recovered_at: str | None = None
     duration_seconds: float | None = None
     engine: str
-    crd_status: dict | None = None
+    engine_status: ChaosEngineStatus | None = None
+    raw_engine_status: dict | None = None
 
 
 class ChaosResults(BaseModel):

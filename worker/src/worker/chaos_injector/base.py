@@ -22,3 +22,8 @@ class ChaosEngine(abc.ABC):
     def collect_status(self, experiment: dict, run_id: str, handle: str) -> dict | None:
         """Read engine-specific status before recovery. Override in subclasses."""
         return None
+
+    @staticmethod
+    def normalize_status(raw: dict) -> dict | None:
+        """Convert raw engine status into the unified schema. Override in subclasses."""
+        return None

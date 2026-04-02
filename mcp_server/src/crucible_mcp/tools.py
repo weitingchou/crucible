@@ -397,7 +397,15 @@ def register_tools(mcp: FastMCP) -> None:
                     "recovered_at": "2025-03-15T14:33:00+00:00",
                     "duration_seconds": 120.0,
                     "engine": "k8s",
-                    "crd_status": {"conditions": [...], "records": [...]}
+                    "engine_status": {
+                      "status": "recovered",
+                      "created_at": "2025-03-15T14:31:00Z",
+                      "updated_at": "2025-03-15T14:33:00Z",
+                      "targets": [
+                        {"id": "doris-be-0", "inject_time": "...", "recover_time": "..."}
+                      ]
+                    },
+                    "raw_engine_status": {"conditions": [...], "records": [...]}
                   }
                 ]
               }
@@ -428,14 +436,37 @@ def register_tools(mcp: FastMCP) -> None:
         - ``duration_seconds``: wall-clock seconds between inject and
           recover.  ``null`` if recovery failed.
         - ``engine``: ``"k8s"`` (Chaos Mesh) or ``"ec2"`` (chaosd).
-        - ``crd_status``: for K8s targets, the Chaos Mesh CRD ``.status``
-          read before deletion.  Contains ``conditions`` (e.g.
-          ``AllInjected``, ``AllRecovered`` with ``lastTransitionTime``)
-          and ``records`` (per-pod/container entries with ``injectTime``
-          and ``recoverTime``).  These are the authoritative timestamps
-          from the Chaos Mesh controller — use them to determine exactly
-          which pods were affected and when.  ``null`` for EC2 targets
-          or if the CRD read failed.
+        - ``engine_status``: normalized status common to both K8s and EC2
+          engines, enabling cross-engine comparison.  ``null`` if the
+          status query failed.  Fields:
+
+          - ``status``: ``"injected"`` (fault still active),
+            ``"recovered"`` (fault removed), or ``"error"`` (engine
+            reported failure).
+          - ``created_at``: ISO-8601 timestamp when the engine first
+            applied the fault.  For K8s this comes from the Chaos Mesh
+            ``AllInjected`` condition's ``lastTransitionTime``; for EC2
+            from the chaosd ``created_at`` field.
+          - ``updated_at``: ISO-8601 timestamp of the engine's last
+            state change.  For K8s this comes from ``AllRecovered``
+            condition; for EC2 from chaosd ``updated_at``.
+          - ``targets``: per-target breakdown — one entry per affected
+            pod (K8s) or a single entry (EC2).  Each has:
+
+            - ``id``: target identifier (K8s pod name or chaosd UID).
+            - ``inject_time``: when the fault was applied to this
+              specific target.
+            - ``recover_time``: when the fault was removed from this
+              target (``null`` if not yet recovered).
+
+        - ``raw_engine_status``: the unmodified response from the
+          engine API, preserved for debugging or accessing
+          engine-specific fields not in the unified schema.  For K8s
+          this is the Chaos Mesh CRD ``.status`` (with ``conditions``
+          and ``records``); for EC2 this is the chaosd
+          ``/api/experiments/`` record (with ``uid``, ``status``,
+          ``kind``, ``action``, ``created_at``, ``updated_at``,
+          ``launch_mode``).  ``null`` if the status query failed.
 
         **collection_error**: ``null`` when both k6 CSV parsing and all
         Prometheus queries succeeded.  On partial failure (e.g. one

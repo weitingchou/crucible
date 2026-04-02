@@ -80,6 +80,42 @@ class K8sChaosEngine(ChaosEngine):
             logger.exception("Failed to read CRD status for %s", handle)
             return None
 
+    @staticmethod
+    def normalize_status(raw: dict) -> dict | None:
+        """Convert Chaos Mesh CRD .status into the unified schema."""
+        if not raw:
+            return None
+
+        conditions = {c["type"]: c for c in raw.get("conditions", [])}
+        all_recovered = conditions.get("AllRecovered", {})
+        all_injected = conditions.get("AllInjected", {})
+
+        if all_recovered.get("status") == "True":
+            status = "recovered"
+        elif all_injected.get("status") == "True":
+            status = "injected"
+        else:
+            status = "error"
+
+        created_at = all_injected.get("lastTransitionTime")
+        updated_at = (all_recovered.get("lastTransitionTime")
+                      or all_injected.get("lastTransitionTime"))
+
+        targets = []
+        for record in raw.get("records", []):
+            targets.append({
+                "id": record.get("id", ""),
+                "inject_time": record.get("injectTime"),
+                "recover_time": record.get("recoverTime"),
+            })
+
+        return {
+            "status": status,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "targets": targets,
+        }
+
     def recover(self, experiment: dict, run_id: str, handle: str) -> None:
         kind, namespace, name = handle.split("/", 2)
         logger.info("Recovering chaos CRD %s/%s (kind=%s) for run %s", namespace, name, kind, run_id)

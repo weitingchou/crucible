@@ -909,7 +909,13 @@ _SAMPLE_CHAOS_EVENTS = [
         "recovered_at": "2025-01-01T00:03:00+00:00",
         "duration_seconds": 120.0,
         "engine": "k8s",
-        "crd_status": {"conditions": [{"type": "AllInjected", "status": "True"}]},
+        "engine_status": {
+            "status": "recovered",
+            "created_at": "2025-01-01T00:01:00Z",
+            "updated_at": "2025-01-01T00:03:00Z",
+            "targets": [{"id": "doris-be-0", "inject_time": "2025-01-01T00:01:00Z", "recover_time": "2025-01-01T00:03:00Z"}],
+        },
+        "raw_engine_status": {"conditions": [{"type": "AllInjected", "status": "True"}]},
     },
 ]
 
@@ -929,7 +935,9 @@ def test_results_includes_chaos_events():
     assert evt["experiment"] == "kill-doris-be"
     assert evt["fault_type"] == "PodChaos"
     assert evt["duration_seconds"] == 120.0
-    assert evt["crd_status"]["conditions"][0]["type"] == "AllInjected"
+    assert evt["engine_status"]["status"] == "recovered"
+    assert evt["engine_status"]["targets"][0]["id"] == "doris-be-0"
+    assert evt["raw_engine_status"]["conditions"][0]["type"] == "AllInjected"
     # k6 still present
     assert len(body["k6"]["metrics"]) == 1
 
@@ -1001,3 +1009,49 @@ def test_results_chaos_s3_error_propagates():
         mock_db.return_value = _make_run_row("r1", status="COMPLETED")
         with pytest.raises(ClientError):
             client.get("/v1/test-runs/r1/results")
+
+
+# ---------------------------------------------------------------------------
+# ChaosEvent Pydantic model — engine_status / raw_engine_status
+# ---------------------------------------------------------------------------
+
+
+def test_chaos_event_model_parses_engine_status():
+    """ChaosEvent model correctly deserializes engine_status into ChaosEngineStatus."""
+    from control_plane.models import ChaosEvent
+
+    evt = ChaosEvent(
+        experiment="test",
+        fault_type="PodChaos",
+        target={"env_type": "k8s"},
+        engine="k8s",
+        engine_status={
+            "status": "recovered",
+            "created_at": "2025-01-01T00:01:00Z",
+            "updated_at": "2025-01-01T00:03:00Z",
+            "targets": [
+                {"id": "pod-0", "inject_time": "2025-01-01T00:01:00Z", "recover_time": "2025-01-01T00:03:00Z"},
+            ],
+        },
+        raw_engine_status={"conditions": []},
+    )
+    assert evt.engine_status.status == "recovered"
+    assert len(evt.engine_status.targets) == 1
+    assert evt.engine_status.targets[0].id == "pod-0"
+    assert evt.raw_engine_status == {"conditions": []}
+
+
+def test_chaos_event_model_accepts_null_statuses():
+    """ChaosEvent allows both engine_status and raw_engine_status to be None."""
+    from control_plane.models import ChaosEvent
+
+    evt = ChaosEvent(
+        experiment="test",
+        fault_type="PodChaos",
+        target={"env_type": "ec2"},
+        engine="ec2",
+        engine_status=None,
+        raw_engine_status=None,
+    )
+    assert evt.engine_status is None
+    assert evt.raw_engine_status is None

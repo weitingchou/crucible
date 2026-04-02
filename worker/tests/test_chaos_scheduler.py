@@ -235,7 +235,9 @@ def test_scheduler_records_events_on_normal_recovery(mock_get_engine):
 
     mock_engine = MagicMock()
     mock_engine.inject.return_value = "handle-evt"
-    mock_engine.collect_status.return_value = {"conditions": [{"type": "AllInjected"}]}
+    raw = {"conditions": [{"type": "AllInjected"}]}
+    mock_engine.collect_status.return_value = raw
+    mock_engine.normalize_status.return_value = {"status": "injected", "targets": []}
     mock_get_engine.return_value = mock_engine
 
     scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev1")
@@ -252,8 +254,10 @@ def test_scheduler_records_events_on_normal_recovery(mock_get_engine):
     assert evt["recovered_at"] is not None
     assert evt["duration_seconds"] is not None
     assert evt["duration_seconds"] >= 0
-    assert evt["crd_status"] == {"conditions": [{"type": "AllInjected"}]}
+    assert evt["engine_status"] == {"status": "injected", "targets": []}
+    assert evt["raw_engine_status"] == raw
     mock_engine.collect_status.assert_called_once()
+    mock_engine.normalize_status.assert_called_once_with(raw)
 
 
 @patch("worker.chaos_injector.scheduler._get_engine")
@@ -276,6 +280,31 @@ def test_scheduler_records_events_on_cancel(mock_get_engine):
     assert len(events) == 1
     assert events[0]["experiment"] == "test-fault"
     assert events[0]["recovered_at"] is not None
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_cancel_normalizes_status(mock_get_engine):
+    """_recover_all calls normalize_status on collected raw status during cancel."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-cn"
+    raw = {"conditions": [{"type": "AllInjected", "status": "True"}]}
+    mock_engine.collect_status.return_value = raw
+    mock_engine.normalize_status.return_value = {"status": "injected", "targets": []}
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="60s"), "run-cn")
+    scheduler.start()
+    time.sleep(0.1)
+    scheduler.cancel()
+    scheduler.join(timeout=5)
+
+    events = scheduler.get_events()
+    assert len(events) == 1
+    assert events[0]["engine_status"] == {"status": "injected", "targets": []}
+    assert events[0]["raw_engine_status"] == raw
+    mock_engine.normalize_status.assert_called_once_with(raw)
 
 
 @patch("worker.chaos_injector.scheduler._get_engine")
@@ -383,7 +412,9 @@ def test_scheduler_normal_recovery_failure_no_event(mock_get_engine):
 
     mock_engine = MagicMock()
     mock_engine.inject.return_value = "handle-nrf"
-    mock_engine.collect_status.return_value = {"conditions": []}
+    raw = {"conditions": []}
+    mock_engine.collect_status.return_value = raw
+    mock_engine.normalize_status.return_value = {"status": "error", "targets": []}
     mock_engine.recover.side_effect = RuntimeError("recover failed")
     mock_get_engine.return_value = mock_engine
 
@@ -398,7 +429,8 @@ def test_scheduler_normal_recovery_failure_no_event(mock_get_engine):
     events = scheduler.get_events()
     assert len(events) == 1
     assert events[0]["recovered_at"] is None
-    assert events[0]["crd_status"] == {"conditions": []}
+    assert events[0]["engine_status"] == {"status": "error", "targets": []}
+    assert events[0]["raw_engine_status"] == raw
 
 
 @patch("worker.chaos_injector.scheduler._get_engine")
@@ -419,7 +451,8 @@ def test_scheduler_collect_status_failure_still_recovers(mock_get_engine):
     mock_engine.recover.assert_called_once()
     events = scheduler.get_events()
     assert len(events) == 1
-    assert events[0]["crd_status"] is None
+    assert events[0]["engine_status"] is None
+    assert events[0]["raw_engine_status"] is None
     assert events[0]["recovered_at"] is not None
 
 
@@ -435,17 +468,21 @@ def test_build_event_calculates_duration():
         "fault_type": "PodChaos",
         "target": {"env_type": "k8s", "namespace": "ns"},
     }
+    engine_status = {"status": "recovered", "targets": []}
+    raw = {"conditions": []}
     evt = ChaosScheduler._build_event(
         exp,
         injected_at="2025-01-01T00:00:00+00:00",
         recovered_at="2025-01-01T00:02:00+00:00",
-        crd_status={"conditions": []},
+        engine_status=engine_status,
+        raw_engine_status=raw,
     )
     assert evt["experiment"] == "test-exp"
     assert evt["fault_type"] == "PodChaos"
     assert evt["engine"] == "k8s"
     assert evt["duration_seconds"] == 120.0
-    assert evt["crd_status"] == {"conditions": []}
+    assert evt["engine_status"] == engine_status
+    assert evt["raw_engine_status"] == raw
     assert evt["target"] == {"env_type": "k8s", "namespace": "ns"}
 
 
@@ -461,8 +498,11 @@ def test_build_event_no_recovery():
         exp,
         injected_at="2025-01-01T00:00:00+00:00",
         recovered_at=None,
-        crd_status=None,
+        engine_status=None,
+        raw_engine_status=None,
     )
     assert evt["recovered_at"] is None
     assert evt["duration_seconds"] is None
     assert evt["engine"] == "ec2"
+    assert evt["engine_status"] is None
+    assert evt["raw_engine_status"] is None
