@@ -223,3 +223,246 @@ def test_scheduler_empty_experiments_completes(mock_get_engine):
 
     assert not scheduler.is_alive()
     mock_engine.inject.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Event tracking (get_events)
+# ---------------------------------------------------------------------------
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_records_events_on_normal_recovery(mock_get_engine):
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-evt"
+    mock_engine.collect_status.return_value = {"conditions": [{"type": "AllInjected"}]}
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev1")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    events = scheduler.get_events()
+    assert len(events) == 1
+    evt = events[0]
+    assert evt["experiment"] == "test-fault"
+    assert evt["fault_type"] == "networkchaos"
+    assert evt["engine"] == "k8s"
+    assert evt["injected_at"] is not None
+    assert evt["recovered_at"] is not None
+    assert evt["duration_seconds"] is not None
+    assert evt["duration_seconds"] >= 0
+    assert evt["crd_status"] == {"conditions": [{"type": "AllInjected"}]}
+    mock_engine.collect_status.assert_called_once()
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_records_events_on_cancel(mock_get_engine):
+    """Events are recorded even when cancel triggers _recover_all."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-cancel"
+    mock_engine.collect_status.return_value = None
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="60s"), "run-ev2")
+    scheduler.start()
+    time.sleep(0.1)
+    scheduler.cancel()
+    scheduler.join(timeout=5)
+
+    events = scheduler.get_events()
+    assert len(events) == 1
+    assert events[0]["experiment"] == "test-fault"
+    assert events[0]["recovered_at"] is not None
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_no_event_when_inject_fails(mock_get_engine):
+    """Failed injection does not produce an event."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.side_effect = RuntimeError("boom")
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev3")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    assert scheduler.get_events() == []
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_multiple_experiments_all_recorded(mock_get_engine):
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.side_effect = ["h1", "h2"]
+    mock_engine.collect_status.return_value = None
+    mock_get_engine.return_value = mock_engine
+
+    spec = {
+        "engine": "chaos-mesh",
+        "experiments": [
+            {
+                "name": "exp-a",
+                "fault_type": "networkchaos",
+                "target": {"env_type": "k8s", "namespace": "ns", "selector": {"a": "b"}},
+                "parameters": {},
+                "schedule": {"start_after": "0s", "duration": "0s"},
+            },
+            {
+                "name": "exp-b",
+                "fault_type": "podchaos",
+                "target": {"env_type": "k8s", "namespace": "ns", "selector": {"a": "b"}},
+                "parameters": {},
+                "schedule": {"start_after": "0s", "duration": "0s"},
+            },
+        ],
+    }
+
+    scheduler = ChaosScheduler(spec, "run-ev4")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    events = scheduler.get_events()
+    assert len(events) == 2
+    assert events[0]["experiment"] == "exp-a"
+    assert events[1]["experiment"] == "exp-b"
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_get_events_returns_copy(mock_get_engine):
+    """get_events returns a copy, not a reference to internal list."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "h1"
+    mock_engine.collect_status.return_value = None
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev5")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    events1 = scheduler.get_events()
+    events2 = scheduler.get_events()
+    assert events1 == events2
+    assert events1 is not events2
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_records_event_on_recovery_failure(mock_get_engine):
+    """When _recover_all fails to recover, event still records with no recovered_at."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-fail"
+    mock_engine.collect_status.return_value = None
+    mock_engine.recover.side_effect = RuntimeError("cleanup failed")
+    mock_get_engine.return_value = mock_engine
+
+    # Use long duration so recovery happens via _recover_all after cancel
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="60s"), "run-ev6")
+    scheduler.start()
+    time.sleep(0.1)
+    scheduler.cancel()
+    scheduler.join(timeout=5)
+
+    events = scheduler.get_events()
+    assert len(events) == 1
+    assert events[0]["recovered_at"] is None
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_normal_recovery_failure_no_event(mock_get_engine):
+    """When recover() fails during normal (non-cancel) path, no event is recorded."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-nrf"
+    mock_engine.collect_status.return_value = {"conditions": []}
+    mock_engine.recover.side_effect = RuntimeError("recover failed")
+    mock_get_engine.return_value = mock_engine
+
+    # duration=0s means normal recovery path (not cancel/_recover_all)
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev7")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    # _run_experiment logs the error but does NOT append an event
+    # The experiment remains in _active and _recover_all runs on thread exit,
+    # which will also fail (same mock), recording the event with no recovered_at
+    events = scheduler.get_events()
+    assert len(events) == 1
+    assert events[0]["recovered_at"] is None
+    assert events[0]["crd_status"] == {"conditions": []}
+
+
+@patch("worker.chaos_injector.scheduler._get_engine")
+def test_scheduler_collect_status_failure_still_recovers(mock_get_engine):
+    """When collect_status raises during normal recovery, recovery still proceeds."""
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    mock_engine = MagicMock()
+    mock_engine.inject.return_value = "handle-csf"
+    mock_engine.collect_status.side_effect = RuntimeError("status read failed")
+    mock_get_engine.return_value = mock_engine
+
+    scheduler = ChaosScheduler(_make_chaos_spec(start_after="0s", duration="0s"), "run-ev8")
+    scheduler.start()
+    scheduler.join(timeout=5)
+
+    # recover should still be called
+    mock_engine.recover.assert_called_once()
+    events = scheduler.get_events()
+    assert len(events) == 1
+    assert events[0]["crd_status"] is None
+    assert events[0]["recovered_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _build_event (unit tests — no threading)
+# ---------------------------------------------------------------------------
+
+def test_build_event_calculates_duration():
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    exp = {
+        "name": "test-exp",
+        "fault_type": "PodChaos",
+        "target": {"env_type": "k8s", "namespace": "ns"},
+    }
+    evt = ChaosScheduler._build_event(
+        exp,
+        injected_at="2025-01-01T00:00:00+00:00",
+        recovered_at="2025-01-01T00:02:00+00:00",
+        crd_status={"conditions": []},
+    )
+    assert evt["experiment"] == "test-exp"
+    assert evt["fault_type"] == "PodChaos"
+    assert evt["engine"] == "k8s"
+    assert evt["duration_seconds"] == 120.0
+    assert evt["crd_status"] == {"conditions": []}
+    assert evt["target"] == {"env_type": "k8s", "namespace": "ns"}
+
+
+def test_build_event_no_recovery():
+    from worker.chaos_injector.scheduler import ChaosScheduler
+
+    exp = {
+        "name": "no-recover",
+        "fault_type": "networkchaos",
+        "target": {"env_type": "ec2", "address": "10.0.0.1"},
+    }
+    evt = ChaosScheduler._build_event(
+        exp,
+        injected_at="2025-01-01T00:00:00+00:00",
+        recovered_at=None,
+        crd_status=None,
+    )
+    assert evt["recovered_at"] is None
+    assert evt["duration_seconds"] is None
+    assert evt["engine"] == "ec2"

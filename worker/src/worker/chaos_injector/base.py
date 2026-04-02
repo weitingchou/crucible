@@ -18,3 +18,7 @@ class ChaosEngine(abc.ABC):
     @abc.abstractmethod
     def recover(self, experiment: dict, run_id: str, handle: str) -> None:
         """Remove the fault using the handle returned by inject()."""
+
+    def collect_status(self, experiment: dict, run_id: str, handle: str) -> dict | None:
+        """Read engine-specific status before recovery. Override in subclasses."""
+        return None

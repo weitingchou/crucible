@@ -760,23 +760,51 @@ _SAMPLE_RESULTS_JSON = {
 }
 
 
-def _mock_s3_get_results(results_json):
-    """Create a mock S3 client that returns results_json for get_object."""
+def _mock_s3_get_results(results_json, chaos_events=None):
+    """Create a mock S3 client that returns results_json and optional chaos_events.
+
+    ``results_json`` is returned for keys ending in ``results.json``.
+    ``chaos_events`` (list) is returned for ``chaos_events.json``; when
+    ``None`` the mock raises ``NoSuchKey`` (no chaos was configured).
+    """
     import json as _json
     mock_s3 = MagicMock()
-    body_bytes = _json.dumps(results_json).encode()
-    mock_s3.get_object.return_value = {
-        "Body": MagicMock(read=MagicMock(return_value=body_bytes)),
-    }
+
+    def _get_object(**kwargs):
+        key = kwargs.get("Key", "")
+        if key.endswith("results.json"):
+            body_bytes = _json.dumps(results_json).encode()
+            return {"Body": MagicMock(read=MagicMock(return_value=body_bytes))}
+        if key.endswith("chaos_events.json"):
+            if chaos_events is not None:
+                body_bytes = _json.dumps(chaos_events).encode()
+                return {"Body": MagicMock(read=MagicMock(return_value=body_bytes))}
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+                "GetObject",
+            )
+        raise ValueError(f"Unexpected S3 key: {key}")
+
+    mock_s3.get_object.side_effect = _get_object
     return mock_s3
+
+
+def _patch_asyncio():
+    """Return a mock asyncio that supports both to_thread and gather."""
+    mock = MagicMock()
+    mock.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+
+    async def _fake_gather(*coros):
+        return tuple([await c for c in coros])
+    mock.gather = _fake_gather
+    return mock
 
 
 def test_results_returns_200_for_completed_run():
     mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON)
     with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
          patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
         mock_db.return_value = _make_run_row("r1", status="COMPLETED")
         response = client.get("/v1/test-runs/r1/results")
     assert response.status_code == 200
@@ -787,6 +815,7 @@ def test_results_returns_200_for_completed_run():
     assert len(body["k6"]["metrics"]) == 1
     assert body["k6"]["metrics"][0]["name"] == "sql_duration_Q1"
     assert len(body["observability"]["sources"]) == 1
+    assert body["chaos"]["events"] == []
 
 
 def test_results_returns_404_for_unknown_run():
@@ -815,8 +844,7 @@ def test_results_returns_200_for_failed_run():
     mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON)
     with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
          patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
         mock_db.return_value = _make_run_row("r1", status="FAILED")
         response = client.get("/v1/test-runs/r1/results")
     assert response.status_code == 200
@@ -837,8 +865,7 @@ def test_results_handles_missing_s3_file():
     mock_s3.get_object.side_effect = ClientError(error_response, "GetObject")
     with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
          patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
         mock_db.return_value = _make_run_row("r1", status="COLLECTING")
         response = client.get("/v1/test-runs/r1/results")
     assert response.status_code == 200
@@ -847,6 +874,7 @@ def test_results_handles_missing_s3_file():
     assert "not yet available" in body["collection_error"]
     assert body["k6"]["metrics"] == []
     assert body["observability"]["sources"] == []
+    assert body["chaos"]["events"] == []
 
 
 def test_results_includes_collection_error():
@@ -858,8 +886,7 @@ def test_results_includes_collection_error():
     mock_s3 = _mock_s3_get_results(results_with_error)
     with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
          patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
-         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
-        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
         mock_db.return_value = _make_run_row("r1", status="COMPLETED")
         response = client.get("/v1/test-runs/r1/results")
     assert response.status_code == 200
@@ -867,3 +894,110 @@ def test_results_includes_collection_error():
     assert "unreachable" in body["collection_error"]
     # k6 metrics should still be present
     assert len(body["k6"]["metrics"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/test-runs/{run_id}/results — chaos events
+# ---------------------------------------------------------------------------
+
+_SAMPLE_CHAOS_EVENTS = [
+    {
+        "experiment": "kill-doris-be",
+        "fault_type": "PodChaos",
+        "target": {"env_type": "k8s", "namespace": "doris", "selector": {"app": "doris-be"}},
+        "injected_at": "2025-01-01T00:01:00+00:00",
+        "recovered_at": "2025-01-01T00:03:00+00:00",
+        "duration_seconds": 120.0,
+        "engine": "k8s",
+        "crd_status": {"conditions": [{"type": "AllInjected", "status": "True"}]},
+    },
+]
+
+
+def test_results_includes_chaos_events():
+    """Chaos events from S3 are merged into the response."""
+    mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON, chaos_events=_SAMPLE_CHAOS_EVENTS)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
+        mock_db.return_value = _make_run_row("r1", status="COMPLETED")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["chaos"]["events"]) == 1
+    evt = body["chaos"]["events"][0]
+    assert evt["experiment"] == "kill-doris-be"
+    assert evt["fault_type"] == "PodChaos"
+    assert evt["duration_seconds"] == 120.0
+    assert evt["crd_status"]["conditions"][0]["type"] == "AllInjected"
+    # k6 still present
+    assert len(body["k6"]["metrics"]) == 1
+
+
+def test_results_no_chaos_file_returns_empty_events():
+    """When chaos_events.json does not exist, chaos.events is an empty list."""
+    mock_s3 = _mock_s3_get_results(_SAMPLE_RESULTS_JSON, chaos_events=None)
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
+        mock_db.return_value = _make_run_row("r1", status="COMPLETED")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    assert response.json()["chaos"]["events"] == []
+
+
+def test_results_chaos_events_present_when_results_missing():
+    """Chaos events should appear even when results.json is not yet available."""
+    import json as _json
+
+    mock_s3 = MagicMock()
+
+    def _get_object(**kwargs):
+        key = kwargs.get("Key", "")
+        if key.endswith("results.json"):
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+                "GetObject",
+            )
+        if key.endswith("chaos_events.json"):
+            body_bytes = _json.dumps(_SAMPLE_CHAOS_EVENTS).encode()
+            return {"Body": MagicMock(read=MagicMock(return_value=body_bytes))}
+        raise ValueError(f"Unexpected S3 key: {key}")
+
+    mock_s3.get_object.side_effect = _get_object
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
+        mock_db.return_value = _make_run_row("r1", status="COLLECTING")
+        response = client.get("/v1/test-runs/r1/results")
+    assert response.status_code == 200
+    body = response.json()
+    assert "not yet available" in body["collection_error"]
+    assert len(body["chaos"]["events"]) == 1
+    assert body["chaos"]["events"][0]["experiment"] == "kill-doris-be"
+
+
+def test_results_chaos_s3_error_propagates():
+    """Non-NoSuchKey S3 errors on chaos_events.json should propagate."""
+    mock_s3 = MagicMock()
+
+    def _get_object(**kwargs):
+        key = kwargs.get("Key", "")
+        if key.endswith("results.json"):
+            import json as _json
+            body_bytes = _json.dumps(_SAMPLE_RESULTS_JSON).encode()
+            return {"Body": MagicMock(read=MagicMock(return_value=body_bytes))}
+        if key.endswith("chaos_events.json"):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Forbidden"}},
+                "GetObject",
+            )
+        raise ValueError(f"Unexpected S3 key: {key}")
+
+    mock_s3.get_object.side_effect = _get_object
+    with patch("control_plane.routers.test_runs_v1.db.get_run", new_callable=AsyncMock) as mock_db, \
+         patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1.asyncio", _patch_asyncio()):
+        mock_db.return_value = _make_run_row("r1", status="COMPLETED")
+        with pytest.raises(ClientError):
+            client.get("/v1/test-runs/r1/results")

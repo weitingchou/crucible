@@ -229,6 +229,59 @@ def test_chaosd_recover_handles_error_gracefully(mock_requests):
 
 
 # ---------------------------------------------------------------------------
+# K8sChaosEngine.collect_status
+# ---------------------------------------------------------------------------
+
+@patch("worker.chaos_injector.k8s_engine.config")
+@patch("worker.chaos_injector.k8s_engine.client")
+def test_k8s_collect_status_returns_crd_status(mock_client, mock_config):
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    mock_api = MagicMock()
+    mock_api.get_namespaced_custom_object.return_value = {
+        "status": {
+            "conditions": [{"type": "AllInjected", "status": "True"}],
+            "records": [{"id": "pod-1", "phase": "Injected"}],
+        }
+    }
+    mock_client.CustomObjectsApi.return_value = mock_api
+
+    engine = K8sChaosEngine()
+    status = engine.collect_status({}, "run-1", "networkchaos/doris-cluster/crucible-run-1-test")
+    assert status["conditions"][0]["type"] == "AllInjected"
+    assert status["records"][0]["id"] == "pod-1"
+    mock_api.get_namespaced_custom_object.assert_called_once_with(
+        group="chaos-mesh.org",
+        version="v1alpha1",
+        namespace="doris-cluster",
+        plural="networkchaos",
+        name="crucible-run-1-test",
+    )
+
+
+@patch("worker.chaos_injector.k8s_engine.config")
+@patch("worker.chaos_injector.k8s_engine.client")
+def test_k8s_collect_status_returns_none_on_error(mock_client, mock_config):
+    from worker.chaos_injector.k8s_engine import K8sChaosEngine
+
+    mock_api = MagicMock()
+    mock_api.get_namespaced_custom_object.side_effect = RuntimeError("not found")
+    mock_client.CustomObjectsApi.return_value = mock_api
+
+    engine = K8sChaosEngine()
+    status = engine.collect_status({}, "run-1", "networkchaos/ns/name")
+    assert status is None
+
+
+def test_chaosd_collect_status_returns_none():
+    """ChaosdEngine inherits the default collect_status returning None."""
+    from worker.chaos_injector.chaosd_engine import ChaosdEngine
+
+    engine = ChaosdEngine()
+    assert engine.collect_status({}, "run-1", "handle") is None
+
+
+# ---------------------------------------------------------------------------
 # _get_engine
 # ---------------------------------------------------------------------------
 

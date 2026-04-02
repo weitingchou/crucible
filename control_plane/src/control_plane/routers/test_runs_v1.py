@@ -327,7 +327,17 @@ async def list_run_artifacts(run_id: str) -> ArtifactsResponse:
 
 @router.get("/{run_id}/results", summary="Get structured test results")
 async def get_run_results(run_id: str) -> TestRunResults:
-    """Return k6 summary stats and observability metrics collected after the run."""
+    """Return k6 summary stats, observability metrics, and chaos event log.
+
+    The response merges data from two S3 artifacts:
+
+    - ``results/{run_id}/results.json`` — k6 metrics and Prometheus data
+      (uploaded by the executor)
+    - ``results/{run_id}/chaos_events.json`` — chaos inject/recover timeline
+      (uploaded by the dispatcher)
+
+    The ``chaos.events`` list is empty when no chaos spec was configured.
+    """
     row = await db.get_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
@@ -351,13 +361,30 @@ async def get_run_results(run_id: str) -> TestRunResults:
                 return None
             raise
 
-    data = await asyncio.to_thread(_load_results)
+    def _load_chaos_events() -> list[dict]:
+        s3 = _s3()
+        try:
+            resp = s3.get_object(
+                Bucket=settings.s3_bucket,
+                Key=f"results/{run_id}/chaos_events.json",
+            )
+            return json.loads(resp["Body"].read())
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "NoSuchKey":
+                return []
+            raise
+
+    data, chaos_events = await asyncio.gather(
+        asyncio.to_thread(_load_results),
+        asyncio.to_thread(_load_chaos_events),
+    )
 
     if data is None:
         return TestRunResults(
             run_id=run_id,
             status=row["status"],
             collection_error="Results file not yet available.",
+            chaos={"events": chaos_events},
         )
 
     return TestRunResults(
@@ -367,4 +394,5 @@ async def get_run_results(run_id: str) -> TestRunResults:
         collection_error=data.get("collection_error"),
         k6=data.get("k6", {}),
         observability=data.get("observability", {}),
+        chaos={"events": chaos_events},
     )

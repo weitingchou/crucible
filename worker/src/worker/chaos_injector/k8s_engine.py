@@ -64,6 +64,22 @@ class K8sChaosEngine(ChaosEngine):
         )
         return f"{kind}/{namespace}/{name}"
 
+    def collect_status(self, experiment: dict, run_id: str, handle: str) -> dict | None:
+        """Read the Chaos Mesh CRD .status field before deletion."""
+        kind, namespace, name = handle.split("/", 2)
+        try:
+            obj = self._api.get_namespaced_custom_object(
+                group="chaos-mesh.org",
+                version="v1alpha1",
+                namespace=namespace,
+                plural=kind,
+                name=name,
+            )
+            return obj.get("status")
+        except Exception:
+            logger.exception("Failed to read CRD status for %s", handle)
+            return None
+
     def recover(self, experiment: dict, run_id: str, handle: str) -> None:
         kind, namespace, name = handle.split("/", 2)
         logger.info("Recovering chaos CRD %s/%s (kind=%s) for run %s", namespace, name, kind, run_id)

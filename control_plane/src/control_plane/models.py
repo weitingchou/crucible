@@ -199,6 +199,21 @@ class ObservabilityResults(BaseModel):
     sources: list[ObservabilitySourceResult] = Field(default_factory=list)
 
 
+class ChaosEvent(BaseModel):
+    experiment: str
+    fault_type: str
+    target: dict
+    injected_at: str | None = None
+    recovered_at: str | None = None
+    duration_seconds: float | None = None
+    engine: str
+    crd_status: dict | None = None
+
+
+class ChaosResults(BaseModel):
+    events: list[ChaosEvent] = Field(default_factory=list)
+
+
 class TestRunResults(BaseModel):
     run_id: str
     status: str
@@ -206,4 +221,5 @@ class TestRunResults(BaseModel):
     collection_error: str | None = None
     k6: K6Results = Field(default_factory=K6Results)
     observability: ObservabilityResults = Field(default_factory=ObservabilityResults)
+    chaos: ChaosResults = Field(default_factory=ChaosResults)
 

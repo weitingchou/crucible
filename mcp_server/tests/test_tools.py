@@ -560,3 +560,35 @@ async def test_get_test_results_server_error(mcp_app):
         mock.side_effect = CrucibleError(500, "Internal error")
         result = await fn("r1")
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_get_test_results_includes_chaos_events(mcp_app):
+    fn = _get_tool(mcp_app, "get_test_results")
+    body = {
+        "run_id": "r1",
+        "status": "COMPLETED",
+        "collected_at": "2025-03-15T14:35:00Z",
+        "collection_error": None,
+        "k6": {"metrics": []},
+        "observability": {"sources": []},
+        "chaos": {
+            "events": [
+                {
+                    "experiment": "kill-be",
+                    "fault_type": "PodChaos",
+                    "target": {"env_type": "k8s", "namespace": "doris"},
+                    "injected_at": "2025-03-15T14:31:00Z",
+                    "recovered_at": "2025-03-15T14:33:00Z",
+                    "duration_seconds": 120.0,
+                    "engine": "k8s",
+                    "crd_status": None,
+                }
+            ]
+        },
+    }
+    with patch("crucible_mcp.tools.client.get_run_results", new_callable=AsyncMock) as mock:
+        mock.return_value = body
+        result = await fn("r1")
+    assert len(result["chaos"]["events"]) == 1
+    assert result["chaos"]["events"][0]["experiment"] == "kill-be"

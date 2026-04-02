@@ -296,9 +296,10 @@ def register_tools(mcp: FastMCP) -> None:
     async def get_test_results(run_id: str) -> dict:
         """Returns structured test results for a completed run.
 
-        The response merges k6 driver metrics and Prometheus observability
-        data collected after the test finished.  Returns 409 if the run is
-        still in progress (PENDING, WAITING_ROOM, EXECUTING).
+        The response merges k6 driver metrics, Prometheus observability
+        data, and chaos injection event logs collected after the test
+        finished.  Returns 409 if the run is still in progress
+        (PENDING, WAITING_ROOM, EXECUTING).
 
         Response structure::
 
@@ -343,6 +344,20 @@ def register_tools(mcp: FastMCP) -> None:
                     ]
                   }
                 ]
+              },
+              "chaos": {
+                "events": [
+                  {
+                    "experiment": "kill-doris-be",
+                    "fault_type": "PodChaos",
+                    "target": {"namespace": "doris", "selector": {"app": "doris-be"}},
+                    "injected_at": "2025-03-15T14:31:00+00:00",
+                    "recovered_at": "2025-03-15T14:33:00+00:00",
+                    "duration_seconds": 120.0,
+                    "engine": "k8s",
+                    "crd_status": {"conditions": [...], "records": [...]}
+                  }
+                ]
               }
             }
 
@@ -355,6 +370,30 @@ def register_tools(mcp: FastMCP) -> None:
         the test plan's ``observability.prometheus_sources``.  Each metric's
         ``values`` is a list of ``[unix_timestamp, string_value]`` pairs
         returned by Prometheus ``query_range``.
+
+        **chaos.events**: one entry per chaos experiment executed during
+        the run.  Empty list when no chaos was configured.  Fields:
+
+        - ``experiment``: name from the test plan's ``chaos_spec.experiments``
+          (e.g. ``"kill-doris-be"``).
+        - ``fault_type``: the Chaos Mesh CRD kind or chaosd attack type
+          (e.g. ``"PodChaos"``, ``"networkchaos"``, ``"stress-cpu"``).
+        - ``target``: the target block from the plan (namespace, selector,
+          or address depending on engine).
+        - ``injected_at`` / ``recovered_at``: ISO-8601 UTC timestamps
+          recorded by the worker when the fault was applied and removed.
+          ``recovered_at`` is ``null`` if recovery failed.
+        - ``duration_seconds``: wall-clock seconds between inject and
+          recover.  ``null`` if recovery failed.
+        - ``engine``: ``"k8s"`` (Chaos Mesh) or ``"ec2"`` (chaosd).
+        - ``crd_status``: for K8s targets, the Chaos Mesh CRD ``.status``
+          read before deletion.  Contains ``conditions`` (e.g.
+          ``AllInjected``, ``AllRecovered`` with ``lastTransitionTime``)
+          and ``records`` (per-pod/container entries with ``injectTime``
+          and ``recoverTime``).  These are the authoritative timestamps
+          from the Chaos Mesh controller — use them to determine exactly
+          which pods were affected and when.  ``null`` for EC2 targets
+          or if the CRD read failed.
 
         **collection_error**: ``null`` when both k6 CSV parsing and all
         Prometheus queries succeeded.  On partial failure (e.g. one

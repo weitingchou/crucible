@@ -275,6 +275,10 @@ curl -X POST http://localhost:8000/v1/test-runs \
 
 You can trigger multiple runs against the same plan — each gets a unique `run_id` in the format `{plan_name}_{YYYYMMDD-HHmm}_{8-hex}`.
 
+### Chaos / resilience testing
+
+Test plans can include a `chaos_spec` section to inject infrastructure faults (pod kills, network delays, I/O errors) during the load test using [Chaos Mesh](https://chaos-mesh.org/) (K8s) or chaosd (EC2). Chaos events are recorded with inject/recover timestamps and included in the test results alongside k6 metrics, so you can correlate fault timing with performance impact in a single `GET /v1/test-runs/{run_id}/results` call.
+
 ### SQL workload file format
 
 SQL files use `-- @name:` annotations to label individual queries. The k6 driver parses these and tracks per-query latency as separate Prometheus metrics.
@@ -326,6 +330,7 @@ The MCP server exposes Crucible's capabilities to AI agents via the [Model Conte
 | `trigger_run_by_plan` | Triggers a new run using an existing plan (with optional cluster_spec/settings) |
 | `list_test_runs` | Lists test runs, optionally filtered by run_label |
 | `monitor_test_progress` | Returns real-time lifecycle status of a test run |
+| `get_test_results` | Returns k6 metrics, observability data, and chaos event log for a completed run |
 | `emergency_stop` | Sends SIGTERM → SIGKILL escalation to stop a running test |
 | `upload_workload_sql` | Validates and uploads an annotated SQL/CQL workload file |
 

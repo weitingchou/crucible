@@ -1,7 +1,9 @@
+import json
 import logging
 import time
 import zlib
 
+import boto3
 from celery.app.control import Inspect
 
 from worker.celery_app import app
@@ -66,16 +68,40 @@ def _start_chaos(plan: dict, run_id: str) -> ChaosScheduler | None:
     return scheduler
 
 
-def _stop_chaos(scheduler: ChaosScheduler | None) -> None:
-    """Cancel and join a running ChaosScheduler, recovering all active faults."""
+def _stop_chaos(scheduler: ChaosScheduler | None) -> list[dict]:
+    """Cancel and join a running ChaosScheduler, recovering all active faults.
+
+    Returns the list of chaos events collected during execution.
+    """
     if scheduler is None:
-        return
+        return []
     if scheduler.is_alive():
         scheduler.cancel()
         scheduler.join(timeout=30)
         if scheduler.is_alive():
             logger.warning("Chaos scheduler did not stop within 30s")
     logger.info("Chaos scheduler stopped")
+    return scheduler.get_events()
+
+
+def _upload_chaos_events(run_id: str, events: list[dict]) -> None:
+    """Upload chaos event log to S3 so the control plane can merge it into results."""
+    if not events:
+        return
+    kwargs: dict = {
+        "region_name": settings.aws_region,
+        "endpoint_url": settings.aws_endpoint_url or None,
+    }
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    s3 = boto3.client("s3", **kwargs)
+    s3.put_object(
+        Bucket=settings.s3_bucket,
+        Key=f"results/{run_id}/chaos_events.json",
+        Body=json.dumps(events, indent=2).encode(),
+        ContentType="application/json",
+    )
 
 
 def _wait_for_completion(run_id: str, timeout: int) -> None:
@@ -150,7 +176,11 @@ def dispatcher_task(
                 )
                 _wait_for_completion(run_id, timeout=completion_timeout)
             finally:
-                _stop_chaos(chaos)
+                events = _stop_chaos(chaos)
+                try:
+                    _upload_chaos_events(run_id, events)
+                except Exception:
+                    logger.exception("Failed to upload chaos events for run %s", run_id)
             return {"status": "intra_node_completed"}
 
         # ── 2b. Inter-node (horizontal) — Two-Phase Check-In ─────────────────
@@ -197,7 +227,11 @@ def dispatcher_task(
         try:
             _wait_for_completion(run_id, timeout=completion_timeout)
         finally:
-            _stop_chaos(chaos)
+            events = _stop_chaos(chaos)
+            try:
+                _upload_chaos_events(run_id, events)
+            except Exception:
+                logger.exception("Failed to upload chaos events for run %s", run_id)
         return {"status": "inter_node_completed"}
 
     finally:

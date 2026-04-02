@@ -175,22 +175,24 @@ def test_dispatcher_inter_node_starts_chaos_after_checkin():
 
 
 def test_stop_chaos_noop_for_none():
-    """_stop_chaos(None) is a no-op — no exception."""
+    """_stop_chaos(None) returns empty list — no exception."""
     from worker.tasks.dispatcher import _stop_chaos
 
-    _stop_chaos(None)  # should not raise
+    assert _stop_chaos(None) == []
 
 
 def test_stop_chaos_cancels_alive_scheduler():
-    """_stop_chaos calls cancel + join on an alive scheduler."""
+    """_stop_chaos calls cancel + join on an alive scheduler and returns events."""
     from worker.tasks.dispatcher import _stop_chaos
 
     mock_sched = MagicMock()
     mock_sched.is_alive.return_value = True
-    _stop_chaos(mock_sched)
+    mock_sched.get_events.return_value = [{"experiment": "test"}]
+    events = _stop_chaos(mock_sched)
 
     mock_sched.cancel.assert_called_once()
     mock_sched.join.assert_called_once_with(timeout=30)
+    assert events == [{"experiment": "test"}]
 
 
 def test_stop_chaos_skips_cancel_for_finished_scheduler():
@@ -199,6 +201,82 @@ def test_stop_chaos_skips_cancel_for_finished_scheduler():
 
     mock_sched = MagicMock()
     mock_sched.is_alive.return_value = False
-    _stop_chaos(mock_sched)
+    mock_sched.get_events.return_value = []
+    events = _stop_chaos(mock_sched)
 
     mock_sched.cancel.assert_not_called()
+    assert events == []
+
+
+def test_upload_chaos_events_puts_to_s3():
+    """_upload_chaos_events uploads JSON to the correct S3 key."""
+    import json
+    with patch("worker.tasks.dispatcher.boto3") as mock_boto3:
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        from worker.tasks.dispatcher import _upload_chaos_events
+        events = [{"experiment": "test-fault", "injected_at": "2025-01-01T00:00:00"}]
+        _upload_chaos_events("run-up1", events)
+
+        mock_s3.put_object.assert_called_once()
+        kwargs = mock_s3.put_object.call_args[1]
+        assert kwargs["Key"] == "results/run-up1/chaos_events.json"
+        assert kwargs["ContentType"] == "application/json"
+        body = json.loads(kwargs["Body"].decode())
+        assert len(body) == 1
+        assert body[0]["experiment"] == "test-fault"
+
+
+def test_upload_chaos_events_noop_when_empty():
+    """_upload_chaos_events does nothing when events list is empty."""
+    with patch("worker.tasks.dispatcher.boto3") as mock_boto3:
+        from worker.tasks.dispatcher import _upload_chaos_events
+        _upload_chaos_events("run-empty", [])
+        mock_boto3.client.assert_not_called()
+
+
+def test_dispatcher_intra_node_uploads_chaos_events():
+    """Intra-node dispatcher uploads chaos events returned by _stop_chaos."""
+    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+         patch("worker.tasks.dispatcher.release_sut_lock"), \
+         patch("worker.tasks.dispatcher._wait_for_completion"), \
+         patch("worker.tasks.dispatcher.update_run_status"), \
+         patch("worker.tasks.dispatcher.k6_executor_task") as m_exec, \
+         patch("worker.tasks.dispatcher.FixtureLoader") as m_loader, \
+         patch("worker.tasks.dispatcher._start_chaos") as m_start, \
+         patch("worker.tasks.dispatcher._stop_chaos") as m_stop, \
+         patch("worker.tasks.dispatcher._upload_chaos_events") as m_upload:
+        m_loader.return_value.load.return_value = None
+        m_exec.delay.return_value = None
+        m_start.return_value = MagicMock()
+        m_stop.return_value = [{"experiment": "kill-be"}]
+
+        from worker.tasks.dispatcher import dispatcher_task
+        dispatcher_task.run(_make_plan(_chaos_spec()), "run-up-intra", cluster_spec=None)
+
+    m_upload.assert_called_once_with("run-up-intra", [{"experiment": "kill-be"}])
+
+
+def test_dispatcher_upload_failure_does_not_crash():
+    """If _upload_chaos_events raises, dispatcher still completes."""
+    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+         patch("worker.tasks.dispatcher.release_sut_lock"), \
+         patch("worker.tasks.dispatcher._wait_for_completion"), \
+         patch("worker.tasks.dispatcher.update_run_status"), \
+         patch("worker.tasks.dispatcher.k6_executor_task") as m_exec, \
+         patch("worker.tasks.dispatcher.FixtureLoader") as m_loader, \
+         patch("worker.tasks.dispatcher._start_chaos") as m_start, \
+         patch("worker.tasks.dispatcher._stop_chaos") as m_stop, \
+         patch("worker.tasks.dispatcher._upload_chaos_events") as m_upload:
+        m_loader.return_value.load.return_value = None
+        m_exec.delay.return_value = None
+        m_start.return_value = MagicMock()
+        m_stop.return_value = [{"experiment": "kill-be"}]
+        m_upload.side_effect = RuntimeError("S3 error")
+
+        from worker.tasks.dispatcher import dispatcher_task
+        result = dispatcher_task.run(_make_plan(_chaos_spec()), "run-up-fail", cluster_spec=None)
+
+    assert result["status"] == "intra_node_completed"
+    m_upload.assert_called_once()
