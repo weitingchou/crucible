@@ -1,9 +1,11 @@
+import logging
 import time
 import zlib
 
 from celery.app.control import Inspect
 
 from worker.celery_app import app
+from worker.chaos_injector import ChaosScheduler
 from worker.config import settings
 from worker.db import (
     acquire_sut_lock,
@@ -17,6 +19,8 @@ from worker.db import (
 from worker.driver_manager.k6_manager import parse_k6_duration
 from worker.fixture_loader.base import FixtureLoader
 from worker.tasks.executor import k6_executor_task
+
+logger = logging.getLogger(__name__)
 
 
 def _sut_lock_key(plan: dict) -> int:
@@ -36,6 +40,42 @@ def _sut_lock_key(plan: dict) -> int:
     else:
         identity = plan.get("test_environment", {}).get("component_spec", {}).get("type", "unknown")
     return zlib.crc32(identity.encode()) & 0x7FFFFFFF
+
+
+def _total_chaos_duration(chaos_spec: dict) -> int:
+    """Return the total wall time for all experiments run sequentially (seconds).
+
+    The ChaosScheduler executes experiments one after another, so the total
+    duration is the *sum* of each experiment's (start_after + duration).
+    """
+    total = 0
+    for exp in chaos_spec.get("experiments", []):
+        sched = exp.get("schedule", {})
+        total += parse_k6_duration(sched.get("start_after", "0s")) + parse_k6_duration(sched.get("duration", "0s"))
+    return total
+
+
+def _start_chaos(plan: dict, run_id: str) -> ChaosScheduler | None:
+    """Start a ChaosScheduler thread if the plan has a chaos_spec."""
+    chaos_spec = plan.get("chaos_spec")
+    if not chaos_spec:
+        return None
+    scheduler = ChaosScheduler(chaos_spec, run_id)
+    scheduler.start()
+    logger.info("Chaos scheduler started for run %s", run_id)
+    return scheduler
+
+
+def _stop_chaos(scheduler: ChaosScheduler | None) -> None:
+    """Cancel and join a running ChaosScheduler, recovering all active faults."""
+    if scheduler is None:
+        return
+    if scheduler.is_alive():
+        scheduler.cancel()
+        scheduler.join(timeout=30)
+        if scheduler.is_alive():
+            logger.warning("Chaos scheduler did not stop within 30s")
+    logger.info("Chaos scheduler stopped")
 
 
 def _wait_for_completion(run_id: str, timeout: int) -> None:
@@ -80,7 +120,8 @@ def dispatcher_task(
     execution = plan["execution"]
     ramp_up_secs = parse_k6_duration(execution.get("ramp_up", "0s"))
     hold_for_secs = parse_k6_duration(execution.get("hold_for", "30s"))
-    completion_timeout = ramp_up_secs + hold_for_secs + 120  # 2-minute buffer
+    chaos_extra = _total_chaos_duration(plan.get("chaos_spec", {})) if plan.get("chaos_spec") else 0
+    completion_timeout = ramp_up_secs + hold_for_secs + chaos_extra + 120  # 2-minute buffer
 
     # ── 0. Acquire exclusive SUT lease ───────────────────────────────────────
     lock_key = _sut_lock_key(plan)
@@ -101,11 +142,15 @@ def dispatcher_task(
         # ── 2a. Intra-node (vertical) ────────────────────────────────────────
         if mode == "intra_node":
             update_run_status(run_id, "EXECUTING", set_started_at=True)
-            k6_executor_task.delay(
-                plan, run_id, segment_flag="0%:100%",
-                local_instances=cluster_size, segment_index=0,
-            )
-            _wait_for_completion(run_id, timeout=completion_timeout)
+            chaos = _start_chaos(plan, run_id)
+            try:
+                k6_executor_task.delay(
+                    plan, run_id, segment_flag="0%:100%",
+                    local_instances=cluster_size, segment_index=0,
+                )
+                _wait_for_completion(run_id, timeout=completion_timeout)
+            finally:
+                _stop_chaos(chaos)
             return {"status": "intra_node_completed"}
 
         # ── 2b. Inter-node (horizontal) — Two-Phase Check-In ─────────────────
@@ -147,8 +192,12 @@ def dispatcher_task(
             update_run_status(run_id, "FAILED", error_detail="Worker check-in timeout exceeded")
             return {"error": "Worker check-in timeout exceeded"}
 
-        # Wait for all executors to finish
-        _wait_for_completion(run_id, timeout=completion_timeout)
+        # ── 3. Chaos injection (after all workers are running) ───────────
+        chaos = _start_chaos(plan, run_id)
+        try:
+            _wait_for_completion(run_id, timeout=completion_timeout)
+        finally:
+            _stop_chaos(chaos)
         return {"status": "inter_node_completed"}
 
     finally:

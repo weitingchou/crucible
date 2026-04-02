@@ -1,0 +1,31 @@
+{{- if .Values.chaos.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "crucible.fullname" . }}-chaos
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["chaos-mesh.org"]
+    resources:
+      - networkchaos
+      - podchaos
+      - stresschaos
+      - iochaos
+    verbs: ["create", "delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "crucible.fullname" . }}-chaos
+  labels:
+    {{- include "crucible.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "crucible.fullname" . }}-chaos
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "crucible.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

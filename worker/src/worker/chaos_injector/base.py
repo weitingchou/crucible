@@ -1,0 +1,20 @@
+"""Abstract base for chaos engines."""
+
+from __future__ import annotations
+
+import abc
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class ChaosEngine(abc.ABC):
+    """Interface for injecting and recovering chaos experiments."""
+
+    @abc.abstractmethod
+    def inject(self, experiment: dict, run_id: str) -> str:
+        """Apply the fault and return a handle string used for recovery."""
+
+    @abc.abstractmethod
+    def recover(self, experiment: dict, run_id: str, handle: str) -> None:
+        """Remove the fault using the handle returned by inject()."""

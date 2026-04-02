@@ -90,6 +90,61 @@ class FailureDetection(BaseModel):
     )
 
 
+class ChaosTarget(BaseModel):
+    """Routing target for a chaos experiment — K8s pods or EC2/bare-metal host."""
+
+    env_type: Literal["k8s", "ec2"]
+    namespace: str | None = None
+    selector: dict[str, str] | None = None
+    address: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_target_fields(self) -> "ChaosTarget":
+        if self.env_type == "k8s":
+            if not self.namespace or not self.selector:
+                raise ValueError(
+                    "'namespace' and 'selector' are required when env_type is 'k8s'."
+                )
+        elif self.env_type == "ec2":
+            if not self.address:
+                raise ValueError(
+                    "'address' is required when env_type is 'ec2'."
+                )
+        return self
+
+
+class ChaosSchedule(BaseModel):
+    """Temporal controls for a chaos experiment, aligned with k6 hold_for."""
+
+    start_after: str = Field(
+        description="Delay before injection, allowing baseline metrics to form (k6 duration string).",
+    )
+    duration: str = Field(
+        description="How long the fault persists before automated recovery (k6 duration string).",
+    )
+
+
+class ChaosExperiment(BaseModel):
+    """A single discrete fault event within a chaos spec."""
+
+    name: str
+    fault_type: str = Field(
+        description="Chaos Mesh resource kind (e.g. 'networkchaos', 'podchaos', 'stresschaos', 'iochaos').",
+    )
+    target: ChaosTarget
+    parameters: dict = Field(default_factory=dict)
+    schedule: ChaosSchedule
+
+
+class ChaosSpec(BaseModel):
+    """Root block for fault injection in a test plan."""
+
+    engine: Literal["chaos-mesh"] = Field(
+        description="Chaos engine to use. Currently only 'chaos-mesh' is supported.",
+    )
+    experiments: list[ChaosExperiment] = Field(..., min_length=1)
+
+
 class ExecutionConfig(BaseModel):
     executor: Literal["k6", "locust"]
     scaling_mode: Literal["intra_node", "inter_node"]
@@ -104,3 +159,4 @@ class TestPlan(BaseModel):
     test_metadata: TestMetadata
     test_environment: TestEnvironment
     execution: ExecutionConfig
+    chaos_spec: ChaosSpec | None = None

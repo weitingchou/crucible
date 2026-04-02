@@ -204,6 +204,13 @@ mcp:
   tolerations: []
   affinity: {}
 
+# ── Chaos Engineering ─────────────────────────────────────────────────────────
+# Chaos Mesh must be pre-installed on the target K8s cluster.
+# This section controls RBAC for the worker to create/delete Chaos Mesh CRDs.
+chaos:
+  rbac:
+    create: false  # Set true to create ClusterRole/Binding for Chaos Mesh CRDs
+
 # ── Prometheus ────────────────────────────────────────────────────────────────
 prometheus:
   enabled: true

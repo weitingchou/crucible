@@ -83,6 +83,34 @@ def register_tools(mcp: FastMCP) -> None:
                 error_rate_threshold: 0.5     # optional (default: 0.5), range (0.0, 1.0]
                 abort_delay: "10s"            # optional (default: "10s")
 
+            chaos_spec:                       # optional — resilience testing
+              engine: "chaos-mesh"            # only supported engine
+              experiments:
+                - name: "degrade-backend"     # identifier for the experiment
+                  fault_type: networkchaos    # Chaos Mesh kind (networkchaos, podchaos, stresschaos, iochaos)
+                  target:
+                    env_type: k8s             # "k8s" or "ec2"
+                    namespace: my-namespace   # required for k8s
+                    selector:                 # required for k8s — K8s label selector
+                      app.kubernetes.io/component: be
+                    # address: "10.0.1.5"     # required for ec2 (chaosd host IP)
+                  parameters:                 # fault-specific params passed to Chaos Mesh
+                    action: delay
+                    delay:
+                      latency: "200ms"
+                      jitter: "50ms"
+                  schedule:
+                    start_after: "1m"         # delay before injection (k6 duration)
+                    duration: "3m"            # how long the fault persists
+
+        The ``chaos_spec`` section enables resilience testing by injecting
+        infrastructure faults during the load test.  Chaos experiments are
+        synchronized with the k6 execution lifecycle: the ``start_after``
+        delay allows baseline metrics to form before injection, and faults
+        are automatically recovered after ``duration`` expires.  For K8s
+        targets, Chaos Mesh must be pre-installed on the cluster.  For EC2
+        targets, the ``chaosd`` agent must be running on the target host.
+
         The ``failure_detection`` section configures automatic SUT failure
         detection.  When enabled (the default), the k6 driver tracks a
         ``query_errors`` Rate metric.  If the error rate exceeds
