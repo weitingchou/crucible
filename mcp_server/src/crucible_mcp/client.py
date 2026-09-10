@@ -42,6 +42,7 @@ async def submit_run(
     label: str = "",
     cluster_spec: dict | None = None,
     cluster_settings: str | None = None,
+    actor: str = "",
 ) -> dict:
     payload: dict = {"plan_yaml": plan_yaml, "plan_name": plan_name, "label": label}
     if cluster_spec is not None:
@@ -50,6 +51,8 @@ async def submit_run(
         raise ValueError("cluster_spec is required when submitting a test run")
     if cluster_settings is not None:
         payload["cluster_settings"] = cluster_settings
+    if actor:
+        payload["actor"] = actor
     async with _client() as c:
         resp = await c.post("/v1/test-runs", json=payload)
         raise_for_response(resp)
@@ -61,6 +64,7 @@ async def trigger_run(
     label: str = "",
     cluster_spec: dict | None = None,
     cluster_settings: str | None = None,
+    actor: str = "",
 ) -> dict:
     if cluster_spec is None:
         raise ValueError("cluster_spec is required when triggering a test run")
@@ -69,6 +73,8 @@ async def trigger_run(
         payload["label"] = label
     if cluster_settings is not None:
         payload["cluster_settings"] = cluster_settings
+    if actor:
+        payload["actor"] = actor
     async with _client() as c:
         resp = await c.post(f"/v1/test-runs/{plan_name}", json=payload)
         raise_for_response(resp)

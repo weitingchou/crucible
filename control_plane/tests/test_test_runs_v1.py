@@ -126,6 +126,23 @@ def test_submit_inserts_run_into_db():
     assert call_kwargs["plan_key"] == "plans/my-label"
     assert call_kwargs["sut_type"] == "doris"
     assert call_kwargs["scaling_mode"] == "intra_node"
+    assert call_kwargs["actor"] == ""  # defaults empty when not supplied
+
+
+def test_submit_records_actor_in_db():
+    """An `actor` in the submit body is persisted on the run."""
+    mock_s3 = MagicMock()
+    with patch("control_plane.routers.test_runs_v1._s3", return_value=mock_s3), \
+         patch("control_plane.routers.test_runs_v1._celery") as mock_celery, \
+         patch("control_plane.routers.test_runs_v1.db.insert_run", new_callable=AsyncMock) as mock_insert, \
+         patch("control_plane.routers.test_runs_v1.asyncio") as mock_asyncio:
+        mock_asyncio.to_thread = AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))
+        mock_celery.send_task.return_value = _mock_celery_result()
+        client.post("/v1/test-runs", json={
+            "plan_yaml": _VALID_PLAN_YAML, "plan_name": "my-label",
+            "cluster_spec": _DORIS_CLUSTER_SPEC, "actor": "gh.alice.42",
+        })
+    assert mock_insert.call_args[1]["actor"] == "gh.alice.42"
 
 
 def test_run_id_format():

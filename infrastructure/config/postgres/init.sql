@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     plan_name     TEXT        NOT NULL DEFAULT '',  -- stable plan identity, e.g. "smoke-test"
     plan_key      TEXT        NOT NULL,            -- S3 key, e.g. "plans/smoke-test"
     run_label     TEXT        NOT NULL DEFAULT '',  -- free-form display label
+    actor         TEXT        NOT NULL DEFAULT '',  -- identity that submitted the run (developer/CI actor)
     sut_type      TEXT        NOT NULL DEFAULT '',
     scaling_mode  TEXT        NOT NULL DEFAULT 'intra_node',
     cluster_spec  JSONB,                            -- runtime cluster topology (per-SUT)
@@ -33,6 +34,11 @@ CREATE TABLE IF NOT EXISTS test_runs (
     completed_at  TIMESTAMPTZ
 );
 
+-- Upgrade path for pre-existing databases (CREATE TABLE IF NOT EXISTS above is a
+-- no-op once the table exists, so add the column idempotently for older deployments).
+ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS actor TEXT NOT NULL DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_test_runs_status ON test_runs(status);
 CREATE INDEX IF NOT EXISTS idx_test_runs_submitted_at ON test_runs(submitted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_test_runs_plan_key ON test_runs(plan_key);
+CREATE INDEX IF NOT EXISTS idx_test_runs_actor ON test_runs(actor);
