@@ -90,12 +90,14 @@ class SubmitRunRequest(BaseModel):
     label: str = ""
     cluster_spec: dict
     cluster_settings: str | None = None
+    actor: str = ""  # identity that submitted the run (developer/CI actor); optional
 
 
 class TriggerRunRequest(BaseModel):
     label: str = ""
     cluster_spec: dict
     cluster_settings: str | None = None
+    actor: str = ""  # identity that submitted the run (developer/CI actor); optional
 
 
 class SubmitRunResponse(BaseModel):
@@ -114,6 +116,7 @@ class RunStatusResponse(BaseModel):
     status: str
     plan_name: str
     run_label: str
+    actor: str = ""
     sut_type: str
     scaling_mode: str
     cluster_spec: dict | None = None
@@ -144,6 +147,7 @@ class RunDetail(BaseModel):
     run_id: str
     plan_name: str
     run_label: str
+    actor: str = ""
     sut_type: str
     status: str
     scaling_mode: str

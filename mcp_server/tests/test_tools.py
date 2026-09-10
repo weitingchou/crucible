@@ -216,6 +216,17 @@ async def test_submit_valid_plan(mcp_app):
 
 
 @pytest.mark.asyncio
+async def test_submit_forwards_actor(mcp_app):
+    """The optional `actor` arg is forwarded to the control-plane client."""
+    fn = _get_tool(mcp_app, "submit_test_run")
+    with patch("crucible_mcp.tools.client.submit_run", new_callable=AsyncMock) as mock:
+        mock.return_value = {"run_id": "r1", "plan_key": "plans/smoke", "strategy": "intra_node"}
+        await fn(_VALID_PLAN_YAML, "smoke", {"type": "doris"}, "lbl", None, "gh.alice.42")
+    # client.submit_run(plan_yaml, plan_name, label, cluster_spec, cluster_settings, actor)
+    assert mock.call_args[0][5] == "gh.alice.42"
+
+
+@pytest.mark.asyncio
 async def test_submit_invalid_plan_returns_errors(mcp_app):
     fn = _get_tool(mcp_app, "submit_test_run")
     result = await fn("not: valid: plan:", "name", {"type": "doris"})
@@ -434,7 +445,7 @@ async def test_trigger_run_by_plan_with_cluster_spec(mcp_app):
         mock.return_value = {"run_id": "r2", "plan_key": "plans/bench", "strategy": "intra_node"}
         result = await fn("bench", spec, "5-be-run")
     assert result["success"] is True
-    mock.assert_awaited_once_with("bench", "5-be-run", spec, None)
+    mock.assert_awaited_once_with("bench", "5-be-run", spec, None, "")
 
 
 @pytest.mark.asyncio
@@ -476,7 +487,7 @@ async def test_trigger_passes_cluster_settings_to_client(mcp_app):
     with patch("crucible_mcp.tools.client.trigger_run", new_callable=AsyncMock) as mock:
         mock.return_value = {"run_id": "r1", "plan_key": "plans/bench", "strategy": "intra_node"}
         await fn("bench", {"type": "doris"}, "", "concurrency=50")
-    mock.assert_awaited_once_with("bench", "", {"type": "doris"}, "concurrency=50")
+    mock.assert_awaited_once_with("bench", "", {"type": "doris"}, "concurrency=50", "")
 
 
 # ---------------------------------------------------------------------------

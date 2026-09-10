@@ -223,6 +223,7 @@ def register_tools(mcp: FastMCP) -> None:
         cluster_spec: dict,
         label: str = "",
         cluster_settings: str | None = None,
+        actor: str = "",
     ) -> dict:
         """Validates and submits a YAML test plan to the Crucible dispatcher.
 
@@ -240,6 +241,9 @@ def register_tools(mcp: FastMCP) -> None:
         *label* is an optional free-form display label; defaults to *plan_name* if empty.
         *cluster_settings* is an optional free-form string recording the benchmark
         factor under test (e.g. a concurrency setting).
+        *actor* is an optional identity of who submitted the run (e.g. a developer
+        or CI actor); recorded on the run and returned by ``monitor_test_progress``
+        and ``list_test_runs`` for attribution.
         Returns the run_id on success.
         """
         # Validate locally first
@@ -267,7 +271,7 @@ def register_tools(mcp: FastMCP) -> None:
                 pass  # best-effort injection
 
         try:
-            result = await client.submit_run(plan_yaml, plan_name, label, cluster_spec, cluster_settings)
+            result = await client.submit_run(plan_yaml, plan_name, label, cluster_spec, cluster_settings, actor)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}
@@ -278,6 +282,7 @@ def register_tools(mcp: FastMCP) -> None:
         cluster_spec: dict,
         label: str = "",
         cluster_settings: str | None = None,
+        actor: str = "",
     ) -> dict:
         """Triggers a new test run using an existing plan stored in Crucible.
 
@@ -292,6 +297,8 @@ def register_tools(mcp: FastMCP) -> None:
         *label* is an optional free-form display label for the run.
         *cluster_settings* is an optional free-form string recording the benchmark
         factor under test (e.g. a concurrency setting).
+        *actor* is an optional identity of who submitted the run (e.g. a developer
+        or CI actor); recorded on the run for attribution.
         Returns the run_id on success.
         """
         try:
@@ -304,7 +311,7 @@ def register_tools(mcp: FastMCP) -> None:
             return {"success": False, "errors": errors}
 
         try:
-            result = await client.trigger_run(plan_name, label, cluster_spec, cluster_settings)
+            result = await client.trigger_run(plan_name, label, cluster_spec, cluster_settings, actor)
         except CrucibleError as exc:
             return {"success": False, "error": exc.detail}
         return {"success": True, **result}

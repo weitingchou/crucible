@@ -50,16 +50,17 @@ async def insert_run(
     scaling_mode: str,
     cluster_spec: dict | None = None,
     cluster_settings: str | None = None,
+    actor: str = "",
 ) -> None:
     await _get_pool().execute(
         """
         INSERT INTO test_runs
-            (run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode,
+            (run_id, task_id, plan_name, plan_key, run_label, actor, sut_type, scaling_mode,
              cluster_spec, cluster_settings)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (run_id) DO NOTHING
         """,
-        run_id, task_id, plan_name, plan_key, run_label, sut_type, scaling_mode,
+        run_id, task_id, plan_name, plan_key, run_label, actor, sut_type, scaling_mode,
         cluster_spec,
         cluster_settings,
     )
