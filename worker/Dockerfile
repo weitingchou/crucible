@@ -1,12 +1,24 @@
 # ── Stage 1: build the custom xk6-sql binary ─────────────────────────────────
-FROM golang:1.25-alpine AS k6-builder
+# Pinned to the BUILD platform, not the target.  EKS needs linux/amd64, and on
+# an arm64 Mac that would otherwise run this stage under QEMU — where the Go
+# compiler reliably segfaults ("compile: signal: segmentation fault") partway
+# through the build.  Running the toolchain natively and cross-compiling with
+# GOOS/GOARCH avoids the emulator entirely, and is much faster besides.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS k6-builder
+
+# Supplied by BuildKit from --platform (e.g. linux/amd64 -> linux, amd64).
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN apk add --no-cache git
+
+# xk6 itself is a build tool: it runs here, so it stays native.
 RUN go install go.k6.io/xk6/cmd/xk6@latest
 
 # xk6-sql provides the generic SQL extension; xk6-sql-driver-mysql covers
 # MySQL-wire-compatible targets (Doris, TiDB, etc.). Add more drivers as needed.
-RUN xk6 build \
+# CGO must be off to cross-compile; k6 and these extensions are pure Go.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} xk6 build \
     --with github.com/grafana/xk6-sql@latest \
     --with github.com/grafana/xk6-sql-driver-mysql@latest \
     --output /k6
