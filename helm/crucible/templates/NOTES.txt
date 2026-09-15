@@ -18,7 +18,7 @@ Crucible has been deployed to namespace {{ .Release.Namespace }}.
 {{- end }}
 
 ── Worker ─────────────────────────────────────────────────────────────────────
-  Replicas: {{ .Values.worker.replicaCount }}
+  Replicas: {{ .Values.worker.dispatch.replicaCount }} dispatch / {{ .Values.worker.execute.replicaCount }} execute
 
 ── Infrastructure ─────────────────────────────────────────────────────────────
 {{- if .Values.rabbitmq.enabled }}

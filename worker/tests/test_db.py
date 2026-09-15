@@ -6,7 +6,7 @@ import pytest
 
 from worker.db import (
     _get_conn,
-    acquire_sut_lock,
+    try_acquire_sut_lock,
     get_ready_count,
     get_run_status,
     get_start_signal,
@@ -242,15 +242,43 @@ def test_get_run_status_returns_none_when_missing():
 
 
 # ---------------------------------------------------------------------------
-# acquire_sut_lock / release_sut_lock
+# try_acquire_sut_lock / release_sut_lock
 # ---------------------------------------------------------------------------
 
-def test_acquire_sut_lock_calls_pg_advisory_lock():
+def test_try_acquire_sut_lock_uses_the_non_blocking_variant():
+    """Must be pg_TRY_advisory_lock — the blocking form parks a worker slot."""
     conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = (True,)
     with patch("worker.db._get_conn", return_value=conn):
-        acquire_sut_lock(12345)
+        assert try_acquire_sut_lock(12345) is True
     sql = cursor.execute.call_args[0][0]
-    assert "pg_advisory_lock" in sql
+    assert "pg_try_advisory_lock" in sql
+
+
+def test_try_acquire_sut_lock_returns_false_when_held():
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = (False,)
+    with patch("worker.db._get_conn", return_value=conn):
+        assert try_acquire_sut_lock(12345) is False
+
+
+def test_try_acquire_sut_lock_commits_so_the_connection_does_not_idle_in_transaction():
+    """psycopg2 opens a transaction on first execute; the fixture load that
+    follows would otherwise run with the connection idle-in-transaction.
+    Committing is safe because a *session* advisory lock outlives its
+    transaction (unlike pg_advisory_xact_lock)."""
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = (True,)
+    with patch("worker.db._get_conn", return_value=conn):
+        assert try_acquire_sut_lock(12345) is True
+    conn.commit.assert_called_once()
+
+
+def test_try_acquire_sut_lock_returns_false_on_empty_result():
+    conn, cursor = _mock_conn()
+    cursor.fetchone.return_value = None
+    with patch("worker.db._get_conn", return_value=conn):
+        assert try_acquire_sut_lock(12345) is False
 
 
 def test_release_sut_lock_calls_pg_advisory_unlock():

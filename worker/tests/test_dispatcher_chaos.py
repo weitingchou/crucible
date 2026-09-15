@@ -48,7 +48,7 @@ def _chaos_spec():
 
 def test_dispatcher_starts_chaos_scheduler_when_spec_present():
     """When chaos_spec is present, _start_chaos is called."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion"), \
          patch("worker.tasks.dispatcher.update_run_status"), \
@@ -69,7 +69,7 @@ def test_dispatcher_starts_chaos_scheduler_when_spec_present():
 
 def test_dispatcher_skips_chaos_when_no_spec():
     """When chaos_spec is absent, _start_chaos returns None."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion"), \
          patch("worker.tasks.dispatcher.update_run_status"), \
@@ -91,7 +91,7 @@ def test_dispatcher_skips_chaos_when_no_spec():
 
 def test_dispatcher_stops_chaos_on_failure():
     """Chaos is stopped even when _wait_for_completion raises."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion") as m_wait, \
          patch("worker.tasks.dispatcher.update_run_status"), \
@@ -145,7 +145,7 @@ def test_total_chaos_duration_multiple_experiments_sums():
 
 def test_dispatcher_inter_node_starts_chaos_after_checkin():
     """In inter-node mode, chaos starts after workers check in."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion"), \
          patch("worker.tasks.dispatcher.update_run_status"), \
@@ -160,7 +160,12 @@ def test_dispatcher_inter_node_starts_chaos_after_checkin():
         m_loader.return_value.load.return_value = None
         m_exec.delay.return_value = None
         m_start.return_value = MagicMock()
-        m_inspect.return_value.active_queues.return_value = {"w1": []}
+        m_inspect.return_value.active_queues.return_value = {
+            "execute@w1": [{"name": "execute"}],
+        }
+        m_inspect.return_value.stats.return_value = {
+            "execute@w1": {"pool": {"max-concurrency": 2}},
+        }
 
         from worker.tasks.dispatcher import dispatcher_task
         result = dispatcher_task.run(
@@ -238,7 +243,7 @@ def test_upload_chaos_events_noop_when_empty():
 
 def test_dispatcher_intra_node_uploads_chaos_events():
     """Intra-node dispatcher uploads chaos events returned by _stop_chaos."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion"), \
          patch("worker.tasks.dispatcher.update_run_status"), \
@@ -260,7 +265,7 @@ def test_dispatcher_intra_node_uploads_chaos_events():
 
 def test_dispatcher_upload_failure_does_not_crash():
     """If _upload_chaos_events raises, dispatcher still completes."""
-    with patch("worker.tasks.dispatcher.acquire_sut_lock"), \
+    with patch("worker.tasks.dispatcher.try_acquire_sut_lock"), \
          patch("worker.tasks.dispatcher.release_sut_lock"), \
          patch("worker.tasks.dispatcher._wait_for_completion"), \
          patch("worker.tasks.dispatcher.update_run_status"), \

@@ -14,6 +14,7 @@ from celery import Celery
 from fastapi import APIRouter, HTTPException
 from pydantic import TypeAdapter, ValidationError
 
+from crucible_lib.queues import DISPATCH_QUEUE
 from crucible_lib.schemas.cluster_spec import ClusterSpec
 from crucible_lib.schemas.test_plan import TestPlan
 
@@ -116,6 +117,7 @@ async def submit_test_run(body: SubmitRunRequest) -> SubmitRunResponse:
         _celery.send_task,
         "worker.tasks.dispatcher.dispatcher_task",
         args=(raw, run_id, body.cluster_spec),
+        queue=DISPATCH_QUEUE,
     )
 
     # Record in PostgreSQL
@@ -220,6 +222,7 @@ async def trigger_run_by_plan(
         _celery.send_task,
         "worker.tasks.dispatcher.dispatcher_task",
         args=(raw, run_id, body.cluster_spec),
+        queue=DISPATCH_QUEUE,
     )
 
     # Record in PostgreSQL

@@ -146,10 +146,20 @@ docker compose -f infrastructure/docker-compose.yml build
 
 # Build a specific service image
 docker compose -f infrastructure/docker-compose.yml build control_plane
-docker compose -f infrastructure/docker-compose.yml build worker
+docker compose -f infrastructure/docker-compose.yml build worker-dispatch
 ```
 
+Both worker roles are pinned to the same `image:` in Compose, so building
+either service produces the one image both use.
+
 > **Note:** The worker Dockerfile performs a multi-stage build. Stage 1 compiles a custom `k6` binary with the `xk6-sql` and `xk6-sql-driver-mysql` extensions using Go 1.22. This step requires internet access on first build and may take a few minutes.
+
+To build for the EKS cluster and push to ECR, use `scripts/build_push.sh`
+instead — it tags images with the commit SHA and targets `linux/amd64`:
+
+```bash
+./scripts/build_push.sh worker          # or: control-plane, mcp, all
+```
 
 ---
 

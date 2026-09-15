@@ -6,6 +6,8 @@ from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import HTTPException
 
+from crucible_lib.queues import DISPATCH_QUEUE
+
 from ..config import settings
 
 _s3 = boto3.client(
@@ -18,6 +20,8 @@ _s3 = boto3.client(
 
 # A Celery app instance used only for dispatching — no workers run here.
 # Tasks are referenced by name so this package need not import the worker package.
+# Routing is resolved sender-side, and this app has no route table, so the
+# target queue is named explicitly on every send.
 _celery = Celery(broker=settings.celery_broker_url, backend=settings.celery_result_backend)
 
 
@@ -37,6 +41,7 @@ async def dispatch_test_run(filename: str) -> dict:
     result = _celery.send_task(
         "worker.tasks.dispatcher.dispatcher_task",
         args=(plan, run_id),
+        queue=DISPATCH_QUEUE,
     )
     return {
         "run_id": run_id,

@@ -42,15 +42,30 @@ controlPlane:
       memory: 512Mi
 
 # ── Worker ────────────────────────────────────────────────────────────────────
+# Peak capacity here is execute.replicaCount x execute.concurrency = 4
+# concurrent runs; dispatch.concurrency (16) is the depth of the queue in front
+# of that, and those slots are cheap because they are almost always blocked.
 worker:
-  replicaCount: 2
-  resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: 2
-      memory: 2Gi
+  dispatch:
+    replicaCount: 1
+    concurrency: 16
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+  execute:
+    replicaCount: 2
+    concurrency: 2
+    resources:
+      requests:
+        cpu: 2
+        memory: 1Gi
+      limits:
+        cpu: 4
+        memory: 4Gi
 
 # ── RabbitMQ ──────────────────────────────────────────────────────────────────
 rabbitmq:

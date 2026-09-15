@@ -2,6 +2,17 @@
 
 Uses a module-level connection that is created lazily and reused across calls
 within the same worker process.
+
+This is only safe under Celery's *prefork* pool, where each child process runs
+one task at a time and gets its own connection after the fork.  A thread-based
+pool (``--pool=threads``/``gevent``) would share one psycopg2 connection across
+concurrently running tasks, which is not supported — and would break
+``try_acquire_sut_lock``, whose advisory locks are scoped to the *session*, not
+the task.  Switching pools requires making the connection thread-local first.
+
+One consequence to keep in mind when sizing the pools: each worker slot holds a
+connection for the lifetime of the process, so total worker connections are
+``(dispatch replicas x -c) + (execute replicas x -c)``.
 """
 
 from __future__ import annotations
@@ -104,11 +115,26 @@ def get_run_status(run_id: str) -> str | None:
         return row[0] if row else None
 
 
-def acquire_sut_lock(lock_key: int) -> None:
-    """Acquire a PostgreSQL session-level advisory lock.  Blocks until available."""
+def try_acquire_sut_lock(lock_key: int) -> bool:
+    """Try to take the SUT advisory lock, returning False instead of blocking.
+
+    The blocking variant would park a Celery worker slot on a lock it may wait
+    minutes or hours for.  Callers should instead release the slot (retry the
+    task) and try again later.
+
+    The lock is session-level, so it is held until ``release_sut_lock`` or until
+    the connection drops — which means a crashed worker releases its locks
+    automatically and cannot wedge a SUT permanently.  It also means committing
+    here is safe: unlike ``pg_advisory_xact_lock``, a session lock outlives the
+    transaction that took it.  Commit we must, or psycopg2 leaves the connection
+    idle-in-transaction for the whole fixture load that follows.
+    """
     conn = _get_conn()
     with conn.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
+        row = cur.fetchone()
+    conn.commit()
+    return bool(row and row[0])
 
 
 def release_sut_lock(lock_key: int) -> None:
