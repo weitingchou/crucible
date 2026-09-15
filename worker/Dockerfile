@@ -50,4 +50,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # The JS driver script path; consumed by the k6 manager as an env var.
 ENV SQL_DRIVER_PATH="/app/worker/src/worker/drivers/generic_sql_driver.js"
 
-CMD ["celery", "-A", "worker.celery_app", "worker", "--loglevel=info"]
+# Both worker roles run from this image; the role is the -Q flag, set by the
+# deployment (see helm/crucible/templates/deployment-worker.yaml and
+# infrastructure/docker-compose.yml).  The default names the dispatch queue
+# explicitly rather than relying on task_default_queue, so it is obvious that a
+# container started this way is only half of a working fleet — without an
+# execute worker alongside it, k6_executor_task has no consumer and runs hang.
+CMD ["celery", "-A", "worker.celery_app", "worker", "-Q", "dispatch", "--loglevel=info"]

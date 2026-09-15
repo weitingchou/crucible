@@ -50,7 +50,7 @@ Uses imageRegistry if explicitly set; otherwise auto-builds from awsAccountId + 
 {{- if .Values.imageRegistry -}}
 {{- .Values.imageRegistry -}}
 {{- else if .Values.awsAccountId -}}
-{{- printf "%s.dkr.ecr.%s.amazonaws.com" .Values.awsAccountId .Values.s3.region -}}
+{{- printf "%s.dkr.ecr.%s.amazonaws.com" (toString .Values.awsAccountId) .Values.s3.region -}}
 {{- end -}}
 {{- end }}
 
@@ -59,7 +59,7 @@ IRSA role ARN built from awsAccountId + serviceAccount.irsaRoleName.
 */}}
 {{- define "crucible.irsaRoleArn" -}}
 {{- if and .Values.awsAccountId .Values.serviceAccount.irsaRoleName -}}
-{{- printf "arn:aws:iam::%s:role/%s" .Values.awsAccountId .Values.serviceAccount.irsaRoleName -}}
+{{- printf "arn:aws:iam::%s:role/%s" (toString .Values.awsAccountId) .Values.serviceAccount.irsaRoleName -}}
 {{- end -}}
 {{- end }}
 
@@ -130,4 +130,51 @@ Prometheus remote-write URL.
 {{- if .Values.prometheus.enabled -}}
 {{- printf "http://%s-prometheus:%d/api/v1/write" (include "crucible.fullname" .) (.Values.prometheus.service.port | int) }}
 {{- end -}}
+{{- end }}
+
+{{/*
+Environment shared by both worker roles (dispatch + execute).
+Both roles run the same image and differ only in which queue they consume.
+Usage: include "crucible.workerEnv" .
+*/}}
+{{- define "crucible.workerEnv" -}}
+- name: CELERY_BROKER_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "crucible.secretName" . }}
+      key: celery-broker-url
+- name: CELERY_RESULT_BACKEND
+  value: "rpc://"
+- name: S3_BUCKET
+  value: {{ if .Values.minio.enabled }}{{ .Values.minio.defaultBucket | quote }}{{ else }}{{ .Values.s3.bucket | quote }}{{ end }}
+- name: AWS_REGION
+  value: {{ .Values.s3.region | quote }}
+- name: AWS_ENDPOINT_URL
+  value: {{ include "crucible.s3EndpointUrl" . | quote }}
+{{- if or .Values.minio.enabled .Values.s3.accessKeyId }}
+- name: AWS_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "crucible.secretName" . }}
+      key: s3-access-key-id
+- name: AWS_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "crucible.secretName" . }}
+      key: s3-secret-access-key
+{{- end }}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "crucible.secretName" . }}
+      key: postgres-url
+{{- if .Values.prometheus.enabled }}
+- name: PROMETHEUS_RW_URL
+  value: {{ include "crucible.prometheusRwUrl" . | quote }}
+{{- end }}
+# Inject pod IP for inter-node scaling coordination (waiting_room).
+- name: RUNNER_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.podIP
 {{- end }}

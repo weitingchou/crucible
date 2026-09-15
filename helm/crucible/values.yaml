@@ -59,25 +59,39 @@ controlPlane:
   affinity: {}
 
 # ── Worker ───────────────────────────────────────────────────────────────────
+# One image, two deployments consuming separate Celery queues.  They must not
+# share a pool: a dispatcher holds its slot until its executor finishes, so on a
+# shared pool dispatchers can occupy every slot and starve the executors they
+# are waiting for.  See templates/deployment-worker.yaml.
 worker:
   image:
     repository: crucible/worker
     tag: latest
     pullPolicy: Always
 
-  replicaCount: 1
+  # dispatcher_task — holds a slot for the whole run but spends nearly all of it
+  # blocked (fixture load, then polling for completion).  Size this for the
+  # number of concurrent runs you expect, not for CPU.  Two costs scale with it:
+  # one forked process and one PostgreSQL connection per slot.
+  dispatch:
+    replicaCount: 1
+    concurrency: 16
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
-  resources: {}
-  #   requests:
-  #     cpu: 500m
-  #     memory: 512Mi
-  #   limits:
-  #     cpu: 2
-  #     memory: 2Gi
-
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
+  # k6_executor_task — each slot spawns k6 load-generator processes (more than
+  # one when cluster_spec.backend_node.replica > 1).  Keep concurrency at or
+  # below the CPU limit: an oversubscribed generator becomes the bottleneck and
+  # the recorded latencies then measure the worker, not the SUT.
+  execute:
+    replicaCount: 1
+    concurrency: 2
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
 # ── RabbitMQ ─────────────────────────────────────────────────────────────────
 rabbitmq:

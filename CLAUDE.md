@@ -26,6 +26,29 @@ The project is currently in the **design/architecture phase**. The authoritative
 | Load Driver | k6 (Go) + custom `xk6-sql` binary | High-concurrency SQL execution via Goroutines |
 | Telemetry | Prometheus (remote-write) | Real-time metrics streamed directly from k6 |
 
+### Celery Queues
+
+The worker runs as **two deployments consuming separate queues**, never one
+shared pool:
+
+| Queue | Task | Deployment |
+|---|---|---|
+| `dispatch` | `dispatcher_task` | `crucible-worker-dispatch` |
+| `execute` | `k6_executor_task` | `crucible-worker-execute` |
+
+A dispatcher holds its slot for the whole run while waiting on its executor, so
+on a shared pool dispatchers fill every slot and starve the executors they are
+waiting for — the run sits `EXECUTING` with no k6 process, forever (issue #2).
+Queue names live in `lib/src/crucible_lib/queues.py`; Celery resolves routing
+**sender-side**, so any new `send_task` call must name its queue explicitly.
+
+`task_acks_late` is deliberately off. Turning it on without first raising
+RabbitMQ's `consumer_timeout` (unset, so the 30-minute default) would make the
+broker redeliver any run longer than 30 minutes.
+
+Contention for a SUT is handled by retrying the dispatcher off-slot
+(`pg_try_advisory_lock` + `self.retry`), not by blocking on the lock.
+
 ### Execution Worker Sub-components
 
 The Celery worker contains four sub-components that run in sequence:
@@ -127,6 +150,19 @@ docker compose --profile doris up -d
 
 - EKS cluster: `richard-claude-playground` (ap-southeast-1)
 - Always deploy to the `crucible` namespace.
+
+### Building and pushing images
+
+```bash
+./scripts/build_push.sh all        # or: worker | control-plane | mcp
+```
+
+Tags images with the short commit SHA (and `latest`), builds `--platform
+linux/amd64`, and pushes with `docker push` — not `buildx --push`, which needs
+`ecr:BatchGetImage` that `claude-bot` lacks. It refuses a dirty tree unless
+given `--allow-dirty`, and prints the matching `helm upgrade --set` flags.
+Deploy the SHA tag, not `latest`, so running pods map to a commit.
+
 ### Helm Deploy Procedure
 
 ```bash
@@ -149,5 +185,11 @@ helm install crucible ./helm/crucible \
 ```
 
 **Always pass explicit passwords** for RabbitMQ and PostgreSQL via `--set` — `values-eks.yaml` leaves them empty.
+
+Worker sizing is per role: `worker.dispatch.{replicaCount,concurrency}` and
+`worker.execute.{replicaCount,concurrency}`. The old flat `worker.replicaCount`
+/ `worker.resources` keys are gone and the chart fails the install if they are
+still set. Keep `execute.concurrency` at or below the pod's CPU limit — an
+oversubscribed k6 makes the worker, not the SUT, the thing being measured.
 
 RabbitMQ's `RABBITMQ_DEFAULT_PASS` only applies on first initialization; the chart uses a definitions file (`RABBITMQ_DEFAULT_DEFINITIONS_FILE`) mounted from the Secret so the password is synced on every pod start, including after `helm upgrade`.

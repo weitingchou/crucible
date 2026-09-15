@@ -7,7 +7,7 @@
 #     ./tests/start_e2e_env.sh
 #     uv run python -m pytest tests/test_e2e_api.py -v
 #
-#   Full — includes MySQL SUT + Celery worker for full-pipeline tests:
+#   Full — includes MySQL SUT + Celery workers for full-pipeline tests:
 #     ./tests/start_e2e_env.sh --full
 #     uv run python -m pytest tests/test_e2e_api.py -v
 #
@@ -17,7 +17,8 @@
 # Full mode additionally:
 #   - Starts a MySQL 8.0 container as the test SUT
 #   - Seeds it with a small test_data table
-#   - Builds and starts the Celery worker container (which includes the k6 binary)
+#   - Builds and starts both Celery worker roles, dispatch and execute
+#     (the image includes the k6 binary)
 #   - Uploads the e2e workload SQL to MinIO
 
 set -euo pipefail
@@ -219,19 +220,27 @@ s3.put_object(Bucket='project-crucible-storage', Key='workloads/e2e-simple', Bod
 print('  Workload uploaded: workloads/e2e-simple')
 "
 
-    echo "==> Building and starting Celery workers (2 replicas for inter-node tests)..."
+    # Dispatchers and executors consume separate queues, so both roles must be
+    # up.  Two execute replicas give inter-node tests more than one node to
+    # fan out across.
+    echo "==> Building and starting Celery workers (1 dispatch + 2 execute)..."
     cd "$INFRA_DIR"
-    docker compose --profile e2e up -d --build --scale worker=2 worker
+    docker compose --profile e2e up -d --build \
+        --scale worker-dispatch=1 --scale worker-execute=2 \
+        worker-dispatch worker-execute
     echo "  Waiting for workers to connect..."
     workers_ready=0
     for i in $(seq 1 30); do
-        workers_ready=$(docker compose --profile e2e logs worker 2>/dev/null | grep -c "celery.*ready" || true)
-        if [[ $workers_ready -ge 2 ]]; then
+        # Celery logs readiness as "<nodename> ready."  Both roles pass -n, so
+        # the node name is dispatch@host / execute@host and the old
+        # "celery.*ready" pattern can never match.
+        workers_ready=$(docker compose --profile e2e logs worker-dispatch worker-execute 2>/dev/null | grep -cE "(dispatch|execute)@.* ready\." || true)
+        if [[ $workers_ready -ge 3 ]]; then
             echo "  $workers_ready workers ready."
             break
         fi
         if [[ $i -eq 30 ]]; then
-            echo "WARNING: Only $workers_ready/2 workers ready. Inter-node tests may fail."
+            echo "WARNING: Only $workers_ready/3 workers ready. Inter-node tests may fail."
         fi
         sleep 2
     done
@@ -244,7 +253,7 @@ echo ""
 echo "============================================"
 echo "  E2E environment is ready!"
 if [[ "$FULL_MODE" == "true" ]]; then
-echo "  Mode: FULL (MySQL SUT + worker)"
+echo "  Mode: FULL (MySQL SUT + dispatch/execute workers)"
 else
 echo "  Mode: DEFAULT (API-only)"
 fi
