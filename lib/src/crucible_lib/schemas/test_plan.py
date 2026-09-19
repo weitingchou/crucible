@@ -32,12 +32,58 @@ class PrometheusMetric(BaseModel):
     query: str
 
 
+class PrometheusTLS(BaseModel):
+    """TLS settings for reaching a Prometheus-compatible endpoint.
+
+    Present so a per-run endpoint issued by a private CA (e.g. a cert-manager
+    CA created alongside a disposable VictoriaMetrics instance) can be verified
+    without adding that CA to the worker image's system trust store.
+    """
+
+    # Forbid extras: a misspelled key here would otherwise be dropped silently
+    # and the query would fall back to the system trust store, failing later
+    # with a bare "certificate verify failed" that points nowhere near the typo.
+    model_config = ConfigDict(extra="forbid")
+
+    ca_bundle_pem: str | None = Field(
+        default=None,
+        description=(
+            "PEM-encoded CA bundle used to verify the endpoint's certificate. "
+            "Hostname verification stays on, so the certificate must carry a "
+            "SAN matching the host in 'url'. This REPLACES the system trust "
+            "store for this source rather than adding to it, so the bundle must "
+            "contain every root needed to verify the endpoint's chain. When "
+            "unset, the worker's system trust store is used."
+        ),
+    )
+
+
 class PrometheusSource(BaseModel):
     name: str
     url: str
     metrics: list[PrometheusMetric] = Field(..., min_length=1)
     resolution: int = Field(default=15, gt=0, description="Minimum step in seconds")
     max_data_points: int = Field(default=500, gt=0, description="Max data points per metric")
+    tls: PrometheusTLS | None = None
+
+    @model_validator(mode="after")
+    def _ca_bundle_requires_https(self) -> "PrometheusSource":
+        """A CA on a plain-HTTP source would be silently ignored.
+
+        requests only consults `verify` for TLS connections, so the query would
+        go out in cleartext while the plan says it is verified.  Fail loudly at
+        upload time instead.
+        """
+        if (
+            self.tls
+            and self.tls.ca_bundle_pem
+            and not self.url.lower().startswith("https://")
+        ):
+            raise ValueError(
+                f"tls.ca_bundle_pem is set but url is not https:// (got {self.url!r}); "
+                "the CA would be ignored and the query sent in cleartext."
+            )
+        return self
 
 
 class Observability(BaseModel):

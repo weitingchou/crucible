@@ -197,6 +197,11 @@ class ObservabilitySourceResult(BaseModel):
     name: str
     url: str
     metrics: list[ObservabilityTimeSeries]
+    # Per-source collection failures (e.g. TLS verification against that
+    # endpoint, an unreachable host, or a rejected PromQL expression).
+    # None when every configured metric came back.  Distinct from the run-level
+    # collection_error, which also folds in k6 parsing and S3 upload failures.
+    error: str | None = None
 
 
 class ObservabilityResults(BaseModel):

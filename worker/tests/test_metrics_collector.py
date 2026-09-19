@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ import pytest
 from worker.metrics_collector import (
     _download_and_parse_csvs,
     _percentile,
+    _prometheus_query_range,
     _query_prometheus_sources,
     _summarize_metrics,
     collect_and_store,
@@ -377,3 +379,223 @@ def test_query_prometheus_sources_fallback_time_window(mock_window, mock_query):
     call_args = mock_query.call_args[0]
     # start should be ~300s before end
     assert call_args[3] - call_args[2] == pytest.approx(300, abs=1)
+
+
+# ---------------------------------------------------------------------------
+# Per-source TLS (tls.ca_bundle_pem)
+# ---------------------------------------------------------------------------
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_source_without_tls_uses_system_trust(mock_window, mock_query):
+    mock_window.return_value = (1000.0, 2000.0)
+    mock_query.return_value = [[1500, "1"]]
+
+    _query_prometheus_sources(
+        [{"name": "s", "url": "http://prom:9090",
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert mock_query.call_args.kwargs["session"].verify is True
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_ca_bundle_is_written_to_a_file_and_used_by_the_session(mock_window, mock_query):
+    """A private per-run CA must reach requests as a readable bundle path."""
+    mock_window.return_value = (1000.0, 2000.0)
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        path = kwargs["session"].verify
+        seen["path"] = path
+        seen["contents"] = Path(path).read_text()
+        return [[1500, "1"]]
+
+    mock_query.side_effect = _capture
+
+    _query_prometheus_sources(
+        [{"name": "s", "url": "https://prom:8428",
+          "tls": {"ca_bundle_pem": "-----BEGIN CERTIFICATE-----\nabc\n"},
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert seen["contents"] == "-----BEGIN CERTIFICATE-----\nabc\n"
+    # ...and must not be left behind on disk afterwards.
+    assert not os.path.exists(seen["path"])
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_ca_bundle_file_is_removed_even_when_the_query_fails(mock_window, mock_query):
+    mock_window.return_value = (1000.0, 2000.0)
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["path"] = kwargs["session"].verify
+        raise ConnectionError("refused")
+
+    mock_query.side_effect = _capture
+
+    _query_prometheus_sources(
+        [{"name": "s", "url": "https://prom:8428",
+          "tls": {"ca_bundle_pem": "pem"},
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert not os.path.exists(seen["path"])
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_empty_tls_block_falls_back_to_system_trust(mock_window, mock_query):
+    mock_window.return_value = (1000.0, 2000.0)
+    mock_query.return_value = [[1500, "1"]]
+
+    _query_prometheus_sources(
+        [{"name": "s", "url": "https://prom:8428", "tls": {},
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert mock_query.call_args.kwargs["session"].verify is True
+
+
+# ---------------------------------------------------------------------------
+# Per-source error reporting
+# ---------------------------------------------------------------------------
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_healthy_source_reports_no_error(mock_window, mock_query):
+    mock_window.return_value = (1000.0, 2000.0)
+    mock_query.return_value = [[1500, "1"]]
+
+    results, _ = _query_prometheus_sources(
+        [{"name": "s", "url": "http://prom:9090",
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert results[0]["error"] is None
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_partial_source_failure_is_reported_on_the_source(mock_window, mock_query):
+    """Consumers gate completeness on the source's own error, not metric count."""
+    mock_window.return_value = (1000.0, 2000.0)
+    mock_query.side_effect = [[[1500, "1"]], ConnectionError("refused")]
+
+    results, run_error = _query_prometheus_sources(
+        [{"name": "engine", "url": "http://prom:9090",
+          "metrics": [{"name": "ok", "query": "up"},
+                      {"name": "bad", "query": "down"}]}],
+        "run-1",
+    )
+    assert len(results[0]["metrics"]) == 1
+    assert "bad" in results[0]["error"]
+    assert "refused" in results[0]["error"]
+    # The run-level string still aggregates it, named by source.
+    assert "Prometheus source 'engine'" in run_error
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_fully_failed_source_is_still_listed(mock_window, mock_query):
+    """A source that broke must not vanish — that reads as 'never configured'."""
+    mock_window.return_value = (1000.0, 2000.0)
+    mock_query.side_effect = ConnectionError("certificate verify failed")
+
+    results, _ = _query_prometheus_sources(
+        [{"name": "engine", "url": "https://prom:8428",
+          "metrics": [{"name": "m", "query": "up"}]}],
+        "run-1",
+    )
+    assert len(results) == 1
+    assert results[0]["name"] == "engine"
+    assert results[0]["metrics"] == []
+    assert "certificate verify failed" in results[0]["error"]
+
+
+@patch("worker.metrics_collector._prometheus_query_range")
+@patch("worker.metrics_collector._get_run_time_window")
+def test_source_with_no_metrics_configured_is_omitted(mock_window, mock_query):
+    mock_window.return_value = (1000.0, 2000.0)
+    results, _ = _query_prometheus_sources(
+        [{"name": "s", "url": "http://prom:9090", "metrics": []}], "run-1"
+    )
+    assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Collection must never strand a run in COLLECTING
+# ---------------------------------------------------------------------------
+
+@patch("worker.metrics_collector._upload_results_json")
+@patch("worker.metrics_collector._query_prometheus_sources")
+@patch("worker.metrics_collector._download_and_parse_csvs")
+@patch("worker.metrics_collector.update_run_status")
+def test_observability_crash_still_completes_the_run(
+    mock_status, mock_parse, mock_prom, mock_upload
+):
+    """An exception from the Prometheus stage must not lose the whole run.
+
+    It sits between two best-effort stages; letting it escape would skip both
+    the results upload and the COMPLETED transition, stranding the run in
+    COLLECTING with the already-parsed k6 data thrown away.
+    """
+    mock_parse.return_value = [{"name": "http_reqs", "type": "counter"}]
+    mock_prom.side_effect = OSError("read-only file system")
+
+    plan = {"test_environment": {"observability": {
+        "prometheus_sources": [{"name": "s", "url": "https://p", "metrics": []}]}}}
+    collect_and_store("run-x", plan)
+
+    assert mock_status.call_args_list[-1].args[1] == "COMPLETED"
+    results = mock_upload.call_args.args[1]
+    assert "read-only file system" in results["collection_error"]
+    # The k6 data survived.
+    assert results["k6"]["metrics"] == [{"name": "http_reqs", "type": "counter"}]
+
+
+@patch("worker.metrics_collector._upload_results_json")
+@patch("worker.metrics_collector._download_and_parse_csvs")
+@patch("worker.metrics_collector.update_run_status")
+def test_explicit_observability_null_is_tolerated(mock_status, mock_parse, mock_upload):
+    """Plans stored via the JSON endpoints round-trip as `observability: null`.
+
+    model_dump() emits the key even when the section is absent, so a .get()
+    default never fires and the value really is None.
+    """
+    mock_parse.return_value = []
+    collect_and_store("run-y", {"test_environment": {"observability": None}})
+
+    assert mock_status.call_args_list[-1].args[1] == "COMPLETED"
+    assert mock_upload.call_args.args[1]["collection_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# _prometheus_query_range — error reporting
+# ---------------------------------------------------------------------------
+
+def test_query_range_surfaces_the_endpoints_own_error_text():
+    """A bad PromQL expression explains itself only in the response body."""
+    resp = MagicMock(status_code=400, reason="Bad Request")
+    resp.json.return_value = {
+        "status": "error", "errorType": "bad_data",
+        "error": "1:36: parse error: unclosed left parenthesis",
+    }
+    session = MagicMock()
+    session.get.return_value = resp
+
+    with pytest.raises(RuntimeError, match="unclosed left parenthesis"):
+        _prometheus_query_range("http://p:9090", "sum(rate(x[1m])", 0, 1, 15, session=session)
+
+
+def test_query_range_falls_back_to_body_text_when_not_json():
+    resp = MagicMock(status_code=502, reason="Bad Gateway", text="upstream connect error")
+    resp.json.side_effect = ValueError("no json")
+    session = MagicMock()
+    session.get.return_value = resp
+
+    with pytest.raises(RuntimeError, match="upstream connect error"):
+        _prometheus_query_range("http://p:9090", "up", 0, 1, 15, session=session)
