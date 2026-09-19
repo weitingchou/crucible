@@ -249,3 +249,74 @@ def test_plan_with_prometheus_source_empty_metrics_rejects():
                 {"name": "engine", "url": "http://prometheus:9090", "metrics": []},
             ]},
         ))
+
+
+# ---------------------------------------------------------------------------
+# PrometheusSource.tls
+# ---------------------------------------------------------------------------
+
+_PEM = "-----BEGIN CERTIFICATE-----\nMIIBkTCB\n-----END CERTIFICATE-----\n"
+
+
+def test_tls_defaults_to_none():
+    src = PrometheusSource(name="engine", url="http://prometheus:9090", metrics=_SAMPLE_METRICS)
+    assert src.tls is None
+
+
+def test_tls_ca_bundle_parses_on_an_https_source():
+    src = PrometheusSource(
+        name="engine",
+        url="https://prometheus.run-abc.svc.cluster.local:8428",
+        metrics=_SAMPLE_METRICS,
+        tls={"ca_bundle_pem": _PEM},
+    )
+    assert src.tls.ca_bundle_pem == _PEM
+
+
+def test_tls_ca_bundle_on_plain_http_is_rejected():
+    """requests ignores verify for http, so the CA would be silently unused
+    and the query sent in cleartext — fail at upload time instead."""
+    with pytest.raises(ValidationError, match="not https"):
+        PrometheusSource(
+            name="engine",
+            url="http://prometheus:9090",
+            metrics=_SAMPLE_METRICS,
+            tls={"ca_bundle_pem": _PEM},
+        )
+
+
+def test_empty_tls_block_is_allowed_on_plain_http():
+    src = PrometheusSource(
+        name="engine", url="http://prometheus:9090",
+        metrics=_SAMPLE_METRICS, tls={},
+    )
+    assert src.tls.ca_bundle_pem is None
+
+
+def test_misspelled_tls_key_is_rejected_not_dropped():
+    """A silently ignored typo would fall back to the system trust store and
+    fail later with a bare 'certificate verify failed'."""
+    with pytest.raises(ValidationError):
+        PrometheusSource(
+            name="engine", url="https://prometheus:9090",
+            metrics=_SAMPLE_METRICS, tls={"ca_bundle": _PEM},
+        )
+
+
+def test_tls_round_trips_through_a_full_test_plan():
+    plan = TestPlan.model_validate(
+        _make_plan(
+            observability={
+                "prometheus_sources": [{
+                    "name": "engine",
+                    "url": "https://prometheus.run-abc.svc.cluster.local:8428",
+                    "metrics": [{"name": "be_cpu", "query": "avg(doris_be_cpu)"}],
+                    "tls": {"ca_bundle_pem": _PEM},
+                }]
+            }
+        )
+    )
+    src = plan.test_environment.observability.prometheus_sources[0]
+    assert src.tls.ca_bundle_pem == _PEM
+    assert plan.model_dump()["test_environment"]["observability"][
+        "prometheus_sources"][0]["tls"]["ca_bundle_pem"] == _PEM

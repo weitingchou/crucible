@@ -56,7 +56,7 @@ def register_tools(mcp: FastMCP) -> None:
               observability:                  # optional — target engine monitoring
                 prometheus_sources:           # list of named Prometheus sources
                   - name: engine              # user-chosen label for this source
-                    url: "http://prometheus:9090"
+                    url: "https://prometheus:9090"
                     metrics:                  # at least one metric required per source
                       - name: "cluster_qps"
                         query: "sum(rate(doris_be_query_total{job='doris-be'}[1m]))"
@@ -64,6 +64,14 @@ def register_tools(mcp: FastMCP) -> None:
                         query: "avg(doris_be_mem_usage_bytes{job='doris-be'})"
                     resolution: 15            # optional, min step in seconds (default: 15)
                     max_data_points: 500      # optional, max points per metric (default: 500)
+                    # tls is optional; required only when the https endpoint
+                    # presents a certificate from a private CA.  Everything
+                    # indented under the '|' is taken literally — no comments.
+                    tls:
+                      ca_bundle_pem: |
+                        -----BEGIN CERTIFICATE-----
+                        MIIBkTCB+wIJAJ...
+                        -----END CERTIFICATE-----
                   - name: infra               # second source for infrastructure metrics
                     url: "http://prom-infra:9090"
                     metrics:
@@ -172,6 +180,19 @@ def register_tools(mcp: FastMCP) -> None:
 
         ``resolution`` and ``max_data_points`` control query step size:
         ``step = max(resolution, test_duration_seconds // max_data_points)``.
+
+        Each **query** should return a *single* series.  Multiple series are
+        flattened into one value list and their labels are dropped, so
+        aggregate (``avg(...)``) rather than grouping (``avg by (instance)(...)``).
+
+        ``tls.ca_bundle_pem`` is optional and needed only when the endpoint is
+        ``https://`` with a certificate from a private CA — a per-run endpoint
+        issued by cert-manager, say.  It is a PEM bundle that *replaces* the
+        system trust store for that source, so it must contain every root
+        needed for the chain.  Hostname verification stays on, so the
+        certificate must carry a SAN matching the host in ``url``.  Setting it
+        on a non-``https://`` url is rejected, because the CA would be ignored
+        and the query sent in cleartext.
         """
         try:
             raw = yaml.safe_load(plan_yaml)
@@ -426,7 +447,15 @@ def register_tools(mcp: FastMCP) -> None:
         **observability.sources**: one entry per Prometheus source defined in
         the test plan's ``observability.prometheus_sources``.  Each metric's
         ``values`` is a list of ``[unix_timestamp, string_value]`` pairs
-        returned by Prometheus ``query_range``.
+        returned by Prometheus ``query_range`` — note the values are strings.
+
+        Each source also carries ``error``: ``None`` when every configured
+        metric came back, otherwise the failures for that source.  A source
+        whose metrics all failed is still listed, with ``metrics`` empty and
+        ``error`` set, so "this source broke" is distinguishable from "this
+        source was never configured".  Queries should return a *single* series:
+        multiple series are flattened into one ``values`` list and their labels
+        are dropped.
 
         **chaos.events**: one entry per chaos experiment executed during
         the run.  Empty list when no chaos was configured.  Fields:

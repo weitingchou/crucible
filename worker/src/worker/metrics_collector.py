@@ -9,13 +9,13 @@ from __future__ import annotations
 import csv
 import json
 import math
+import tempfile
 import time
 from datetime import datetime, timezone
-
-import urllib.parse
-import urllib.request
+from pathlib import Path
 
 import boto3
+import requests
 
 from worker.config import settings
 from worker.db import update_run_status
@@ -53,14 +53,21 @@ def collect_and_store(
         collection_error = f"k6 CSV parsing failed: {type(exc).__name__}: {exc}"
 
     # ── 2. Query Prometheus observability sources ─────────────────────────
+    # `or {}` rather than a .get default: a plan stored via the JSON endpoints
+    # round-trips through model_dump(), which writes an explicit
+    # `observability: null` when the section is absent.
     obs_config = (
-        plan.get("test_environment", {})
-        .get("observability", {})
+        (plan.get("test_environment", {}).get("observability") or {})
         .get("prometheus_sources", [])
     )
     if obs_config:
-        sources, obs_error = _query_prometheus_sources(obs_config, run_id)
-        obs_sources = sources
+        try:
+            obs_sources, obs_error = _query_prometheus_sources(obs_config, run_id)
+        except Exception as exc:
+            # Collection is best-effort, like the k6 and S3 stages either side.
+            # Letting this escape would strand the run in COLLECTING with no
+            # results.json at all, losing the k6 data already parsed above.
+            obs_error = f"Prometheus collection failed: {type(exc).__name__}: {exc}"
         if obs_error:
             collection_error = (
                 f"{collection_error}; {obs_error}" if collection_error else obs_error
@@ -191,29 +198,59 @@ def _query_prometheus_sources(
         step = max(resolution, int(duration_seconds // max_data_points)) if max_data_points > 0 else resolution
 
         source_metrics: list[dict] = []
-        for metric_cfg in src_cfg.get("metrics", []):
-            metric_name = metric_cfg.get("name", "")
-            query = metric_cfg.get("query", "")
-            try:
-                values = _prometheus_query_range(
-                    src_url, query, start_ts, end_ts, step
-                )
-                source_metrics.append({
-                    "name": metric_name,
-                    "query": query,
-                    "values": values,
-                })
-            except Exception as exc:
-                errors.append(
-                    f"Prometheus source '{src_name}' metric '{metric_name}': "
-                    f"{type(exc).__name__}: {exc}"
-                )
+        source_errors: list[str] = []
 
-        if source_metrics:
+        # A per-run endpoint may present a certificate from a private CA that
+        # the worker image cannot know about, so verify against a CA supplied
+        # with the source.  Written to a temp file because that is what the
+        # verify= parameter takes; removed again as soon as the source is done.
+        ca_path: str | None = None
+        ca_pem = (src_cfg.get("tls") or {}).get("ca_bundle_pem")
+        # One session per source: every metric then shares a connection and a
+        # single parse of the CA bundle, instead of a fresh TLS handshake each.
+        session = requests.Session()
+        try:
+            if ca_pem:
+                with tempfile.NamedTemporaryFile(
+                    "w", prefix="prom-ca-", suffix=".pem", delete=False
+                ) as fh:
+                    ca_path = fh.name
+                    fh.write(ca_pem)
+                session.verify = ca_path
+
+            for metric_cfg in src_cfg.get("metrics", []):
+                metric_name = metric_cfg.get("name", "")
+                query = metric_cfg.get("query", "")
+                try:
+                    values = _prometheus_query_range(
+                        src_url, query, start_ts, end_ts, step, session=session
+                    )
+                    source_metrics.append({
+                        "name": metric_name,
+                        "query": query,
+                        "values": values,
+                    })
+                except Exception as exc:
+                    source_errors.append(
+                        f"metric '{metric_name}': {type(exc).__name__}: {exc}"
+                    )
+        finally:
+            session.close()
+            if ca_path:
+                Path(ca_path).unlink(missing_ok=True)
+
+        errors.extend(
+            f"Prometheus source '{src_name}' {e}" for e in source_errors
+        )
+
+        # Emit the source even when every metric failed, so a consumer can tell
+        # "this source broke" from "this source was never configured".
+        if source_metrics or source_errors:
             results.append({
                 "name": src_name,
                 "url": src_url,
                 "metrics": source_metrics,
+                "error": "; ".join(source_errors) if source_errors else None,
             })
 
     error_str = "; ".join(errors) if errors else None
@@ -226,18 +263,37 @@ def _prometheus_query_range(
     start: float,
     end: float,
     step: int,
+    session: requests.Session | None = None,
 ) -> list[list]:
-    """Execute a Prometheus query_range and return [[timestamp, value], ...]."""
-    params = urllib.parse.urlencode({
+    """Execute a Prometheus query_range and return [[timestamp, value], ...].
+
+    *session* carries the per-source TLS settings (``session.verify`` is either
+    a CA bundle path or True).  Hostname verification is on either way.
+    """
+    params = {
         "query": query,
         "start": start,
         "end": end,
         "step": f"{step}s",
-    })
-    url = f"{base_url}/api/v1/query_range?{params}"
-    req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read())
+    }
+    http = session or requests
+    resp = http.get(
+        f"{base_url}/api/v1/query_range",
+        params=params,
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        # raise_for_status() would discard the body, but a bad PromQL expression
+        # is the most common failure here and the reason is only in the body.
+        detail = ""
+        try:
+            detail = (resp.json() or {}).get("error") or ""
+        except ValueError:
+            detail = resp.text[:200]
+        raise RuntimeError(
+            f"HTTP {resp.status_code} from {base_url}: {detail or resp.reason}"
+        )
+    data = resp.json()
     if data.get("status") != "success":
         raise RuntimeError(f"Prometheus returned status={data.get('status')}")
 
