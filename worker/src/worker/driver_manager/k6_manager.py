@@ -56,8 +56,12 @@ def spawn_k6(
     db_host, db_port = parse_host(cluster_info["host"], cluster_info.get("port"))
 
     env = os.environ.copy()
-    env["K6_PROMETHEUS_RW_SERVER_URL"] = settings.prometheus_rw_url
-    env["K6_PROMETHEUS_RW_INJECT_TAGS"] = f"run_id={run_id},segment={segment_flag}"
+    # Remote-write is optional: deployments that bring their own metrics stack
+    # run with prometheus.enabled=false and no endpoint configured.
+    remote_write = bool(settings.prometheus_rw_url)
+    if remote_write:
+        env["K6_PROMETHEUS_RW_SERVER_URL"] = settings.prometheus_rw_url
+        env["K6_PROMETHEUS_RW_INJECT_TAGS"] = f"run_id={run_id},segment={segment_flag}"
     env["DB_HOST"] = db_host
     env["DB_PORT"] = str(db_port)
     env["DB_USER"] = cluster_info.get("username", "root")
@@ -86,9 +90,11 @@ def spawn_k6(
     else:
         cmd += ["--vus", str(concurrency), "--duration", hold_for]
 
+    cmd += ["--execution-segment", segment_flag]
+    if remote_write:
+        cmd += ["--out", "experimental-prometheus-rw"]
+    # The CSV is the source of truth for results.json, so it is never optional.
     cmd += [
-        "--execution-segment", segment_flag,
-        "--out", "experimental-prometheus-rw",
         "--out", f"csv=/tmp/k6_raw_{run_id}_{segment_index}_{instance_index}.csv",
         settings.sql_driver_path,
     ]

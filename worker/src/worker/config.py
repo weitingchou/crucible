@@ -18,8 +18,11 @@ class Settings(BaseSettings):
     # Injected by the container scheduler so master tasks can advertise their IP.
     runner_ip: str = "127.0.0.1"
 
-    # Prometheus remote-write endpoint used by k6's experimental-prometheus-rw output.
-    prometheus_rw_url: str = "http://localhost:9090/api/v1/write"
+    # Prometheus remote-write endpoint for k6's experimental-prometheus-rw
+    # output.  Empty disables that output entirely — the chart leaves this unset
+    # when prometheus.enabled=false, and a localhost default would just point k6
+    # at nothing inside its own pod and log a connection error every flush.
+    prometheus_rw_url: str = ""
 
     # How long a dispatcher keeps retrying for a busy SUT's lease before it
     # gives up and fails the run.  Retries happen off-slot, so a long wait is

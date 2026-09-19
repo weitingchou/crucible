@@ -178,3 +178,58 @@ def test_spawn_k6_failure_detection_disabled(mock_popen):
     assert env["K6_FAILURE_DETECTION_DISABLED"] == "true"
     assert "K6_ERROR_RATE_THRESHOLD" not in env
     assert "K6_ERROR_ABORT_DELAY" not in env
+
+
+# ---------------------------------------------------------------------------
+# Optional Prometheus remote-write (prometheus.enabled=false)
+# ---------------------------------------------------------------------------
+
+@patch("worker.driver_manager.k6_manager.settings")
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_remote_write_output_is_added_when_an_endpoint_is_configured(mock_popen, mock_settings):
+    mock_settings.prometheus_rw_url = "http://prom:9090/api/v1/write"
+    mock_settings.k6_binary = "/usr/local/bin/k6"
+    mock_settings.sql_driver_path = "/driver.js"
+
+    spawn_k6("run-1", "0%:100%", 0, _make_plan("doris-fe:9030"))
+
+    cmd = mock_popen.call_args.args[0]
+    env = mock_popen.call_args.kwargs["env"]
+    assert "experimental-prometheus-rw" in cmd
+    assert env["K6_PROMETHEUS_RW_SERVER_URL"] == "http://prom:9090/api/v1/write"
+    assert "run_id=run-1" in env["K6_PROMETHEUS_RW_INJECT_TAGS"]
+
+
+@patch("worker.driver_manager.k6_manager.settings")
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_remote_write_output_is_dropped_when_no_endpoint_is_configured(mock_popen, mock_settings):
+    """A bring-your-own-metrics deployment runs with prometheus.enabled=false.
+
+    Leaving the output wired up would make k6 log a connection failure on every
+    flush for the whole run, against an endpoint that does not exist.
+    """
+    mock_settings.prometheus_rw_url = ""
+    mock_settings.k6_binary = "/usr/local/bin/k6"
+    mock_settings.sql_driver_path = "/driver.js"
+
+    spawn_k6("run-1", "0%:100%", 0, _make_plan("doris-fe:9030"))
+
+    cmd = mock_popen.call_args.args[0]
+    env = mock_popen.call_args.kwargs["env"]
+    assert "experimental-prometheus-rw" not in cmd
+    assert "K6_PROMETHEUS_RW_SERVER_URL" not in env
+    assert "K6_PROMETHEUS_RW_INJECT_TAGS" not in env
+
+
+@patch("worker.driver_manager.k6_manager.settings")
+@patch("worker.driver_manager.k6_manager.subprocess.Popen")
+def test_csv_output_survives_without_prometheus(mock_popen, mock_settings):
+    """results.json is built from the CSV, so that output is never optional."""
+    mock_settings.prometheus_rw_url = ""
+    mock_settings.k6_binary = "/usr/local/bin/k6"
+    mock_settings.sql_driver_path = "/driver.js"
+
+    spawn_k6("run-9", "0%:100%", 0, _make_plan("doris-fe:9030"), segment_index=2)
+
+    cmd = mock_popen.call_args.args[0]
+    assert any(c.startswith("csv=/tmp/k6_raw_run-9_2_0.csv") for c in cmd)
