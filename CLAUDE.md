@@ -24,7 +24,31 @@ The project is currently in the **design/architecture phase**. The authoritative
 | Metadata Store | PostgreSQL | Test metadata, resource leasing/locking |
 | Execution Worker | Python (Celery) + Docker | Autonomous test lifecycle runner |
 | Load Driver | k6 (Go) + custom `xk6-sql` binary | High-concurrency SQL execution via Goroutines |
-| Telemetry | Prometheus (remote-write) | Real-time metrics streamed directly from k6 |
+| Telemetry | Prometheus (remote-write) | Real-time metrics streamed directly from k6 (optional — see below) |
+
+### Bring-your-own metrics (`prometheus.enabled`)
+
+The bundled Prometheus is only a remote-write sink for k6 — its scrape config
+is empty and nothing in Crucible scrapes or queries it. `prometheus.enabled`
+defaults to `true`; set it to `false` when the consumer supplies its own
+metrics stack.
+
+With it off:
+
+- The Prometheus Deployment, Service, PVC and ConfigMap are not created.
+- `PROMETHEUS_RW_URL` is unset on the workers, so `spawn_k6` omits the
+  `experimental-prometheus-rw` output. Runs still complete and results are
+  unchanged — `results.json` is built from k6's CSV output, which is never
+  optional. The only loss is live time series for the load driver.
+- The MCP server stops injecting `k6_prometheus_rw_server_url` into plans.
+
+Unaffected, because the worker queries those URLs directly and they are the
+caller's to supply: `test_environment.observability.prometheus_sources`,
+including its `tls.ca_bundle_pem` for endpoints behind a private CA.
+
+Note that the plan-level `k6_prometheus_rw_server_url` field is currently
+injected by the MCP server but read by nothing — `spawn_k6` uses the
+`PROMETHEUS_RW_URL` env var instead. Setting it in a plan has no effect.
 
 ### Celery Queues
 

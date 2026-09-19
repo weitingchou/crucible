@@ -226,6 +226,21 @@ chaos:
     create: false  # Set true to create ClusterRole/Binding for Chaos Mesh CRDs
 
 # ── Prometheus ────────────────────────────────────────────────────────────────
+# The bundled Prometheus exists only as a remote-write sink for k6 — its scrape
+# config is empty, and nothing in Crucible scrapes or queries it.
+#
+# Set enabled=false to bring your own metrics stack.  What changes:
+#   - The Deployment, Service, PVC and ConfigMap are not created.
+#   - PROMETHEUS_RW_URL is left unset on the workers, so k6 runs without its
+#     remote-write output.  Runs still complete and results are unaffected:
+#     results.json is built from k6's CSV output, which is always enabled.
+#     You simply get no live time series for the load driver itself.
+#   - The MCP server stops injecting k6_prometheus_rw_server_url into plans.
+#
+# What still works, and needs nothing from you:
+#   - test_environment.observability.prometheus_sources.  Those URLs are yours
+#     to supply and are queried directly by the worker, so a bring-your-own
+#     endpoint (a per-run VictoriaMetrics, say) is unaffected by this setting.
 prometheus:
   enabled: true
   image:
